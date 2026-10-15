@@ -153,4 +153,140 @@ describe('Antigravity discovery and failure diagnostics', () => {
     await expect(manager().generate({ vendor: 'antigravity', prompt: 'a blue cup', signal: controller.signal })).rejects.toThrow('cancelled by caller')
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('retries unsupported-client discovery with only the User-Agent changed and caches the actual project', async () => {
+    const discoveryCalls: Array<{ url: string; init: RequestInit }> = []
+    const generationProjects: string[] = []
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes(':loadCodeAssist')) {
+        discoveryCalls.push({ url, init })
+        return new Headers(init.headers).get('User-Agent')!.includes('Antigravity/')
+          ? json({ cloudaicompanionProject: { id: 'recovered-account-project' } })
+          : json(unsupported)
+      }
+      generationProjects.push(JSON.parse(String(init.body)).project)
+      return image()
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const subject = manager()
+    await expect(subject.generate({ vendor: 'antigravity', prompt: 'a blue cup' })).resolves.toEqual([{ b64_json: 'c3R1Yg==' }])
+    expect(discoveryCalls).toHaveLength(5)
+    const original = discoveryCalls[0]!
+    const retry = discoveryCalls[4]!
+    expect(retry.url).toBe(original.url)
+    expect(retry.init.method).toBe(original.init.method)
+    expect(retry.init.body).toBe(original.init.body)
+    const originalHeaders = new Headers(original.init.headers)
+    const retryHeaders = new Headers(retry.init.headers)
+    expect(originalHeaders.get('User-Agent')).toBe('google-api-nodejs-client/9.15.1')
+    expect(retryHeaders.get('User-Agent')).toContain('Antigravity/2.0.6')
+    originalHeaders.delete('User-Agent')
+    retryHeaders.delete('User-Agent')
+    expect([...retryHeaders]).toEqual([...originalHeaders])
+    await subject.generate({ vendor: 'antigravity', prompt: 'a red cup' })
+    expect(discoveryCalls).toHaveLength(5)
+    expect(generationProjects).toEqual(['recovered-account-project', 'recovered-account-project'])
+    expect(fetchMock.mock.calls.some(([url]) => url.includes(':onboardUser'))).toBe(false)
+  })
+
+  it('preserves the original discovery endpoint priority when a later SDK endpoint has an account project', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(new Headers(init.headers).get('User-Agent')).toBe('google-api-nodejs-client/9.15.1')
+      return fetchMock.mock.calls.length === 1 ? json(unsupported) : json({ cloudaicompanionProject: 'existing-account-project' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await antigravityResolveProject(blob)).toBe('existing-account-project')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry discovery for an unrelated missing-project response', async () => {
+    const fetchMock = vi.fn(async () => json({ allowedTiers: [{ id: 'free-tier', isDefault: true }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    await antigravityResolveProject(blob)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('retains the working image fallback when Antigravity-identity discovery is also unavailable', async () => {
+    const identities: string[] = []
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes(':loadCodeAssist')) {
+        const ua = new Headers(init.headers).get('User-Agent')!
+        identities.push(ua)
+        return ua.includes('Antigravity/') ? json({ error: { message: 'discovery unavailable' } }, 403) : json(unsupported)
+      }
+      return image()
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(manager().generate({ vendor: 'antigravity', prompt: 'a blue cup' })).resolves.toEqual([{ b64_json: 'c3R1Yg==' }])
+    expect(identities.filter(ua => ua === 'google-api-nodejs-client/9.15.1')).toHaveLength(4)
+    expect(identities.filter(ua => ua.includes('Antigravity/'))).toHaveLength(4)
+  })
+
+  it('labels identity-retry errors separately and keeps them redacted', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes(':loadCodeAssist')) {
+        return new Headers(init.headers).get('User-Agent')!.includes('Antigravity/')
+          ? json({ error: { message: `${blob.accessToken} ${blob.refreshToken} ${blob.email}` } }, 403)
+          : json(unsupported)
+      }
+      return json({ error: { message: 'generation unavailable' } }, 500)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const error = await manager().generate({ vendor: 'antigravity', prompt: 'a blue cup' }).catch(value => value as Error)
+    expect(error.message).toContain('[Antigravity/2.0.6]')
+    expect(error.message).toContain('HTTP 403')
+    expect(error.message).toContain('HTTP 500')
+    expect(error.message).toContain('[redacted]')
+    for (const secret of [blob.accessToken, blob.refreshToken, blob.email]) expect(error.message).not.toContain(secret)
+  })
+
+  it('propagates cancellation during the identity retry without trying further endpoints or generating', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toContain(':loadCodeAssist')
+      if (new Headers(init.headers).get('User-Agent')!.includes('Antigravity/')) {
+        controller.abort(new Error('cancelled during identity retry'))
+        init.signal!.throwIfAborted()
+      }
+      return json(unsupported)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(manager().generate({ vendor: 'antigravity', prompt: 'a blue cup', signal: controller.signal }))
+      .rejects.toThrow('cancelled during identity retry')
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+  })
+
+  it('loads the current Antigravity version before retrying discovery', async () => {
+    setAntigravityVersionForTest(undefined)
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.includes(':loadCodeAssist')) {
+        expect(url).toContain('antigravity-auto-updater-')
+        return new Response('3.1.2')
+      }
+      const ua = new Headers(init!.headers).get('User-Agent')!
+      if (ua.includes('Antigravity/')) {
+        expect(ua).toContain('Antigravity/3.1.2')
+        return json({ cloudaicompanionProject: 'current-client-project' })
+      }
+      return json(unsupported)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await antigravityResolveProject(blob)).toBe('current-client-project')
+    expect(fetchMock).toHaveBeenCalledTimes(6)
+  })
+
+  it('propagates cancellation during version discovery before any identity retry', async () => {
+    setAntigravityVersionForTest(undefined)
+    const controller = new AbortController()
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes(':loadCodeAssist')) return json(unsupported)
+      expect(url).toContain('antigravity-auto-updater-')
+      controller.abort(new Error('cancelled during version discovery'))
+      init.signal!.throwIfAborted()
+      return new Response('3.1.2')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(antigravityResolveProject(blob, controller.signal)).rejects.toThrow('cancelled during version discovery')
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+  })
 })

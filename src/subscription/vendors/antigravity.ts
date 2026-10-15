@@ -86,22 +86,26 @@ export function setAntigravityVersionForTest(version: string | undefined): void 
 }
 
 /** Fetch and cache the current version once; failures keep the fallback. */
-export async function initAntigravityVersion(): Promise<void> {
+export async function initAntigravityVersion(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
   if (antigravityVersion !== undefined) return
-  const parsed = await fetchVersionText(VERSION_URL)
-    ?? await fetchVersionText(CHANGELOG_URL, CHANGELOG_SCAN_CHARS)
+  const parsed = await fetchVersionText(VERSION_URL, undefined, signal)
+    ?? await fetchVersionText(CHANGELOG_URL, CHANGELOG_SCAN_CHARS, signal)
+  signal?.throwIfAborted()
   if (parsed !== undefined) antigravityVersion = parsed
 }
 
-async function fetchVersionText(url: string, maxChars?: number): Promise<string | undefined> {
+async function fetchVersionText(url: string, maxChars?: number, signal?: AbortSignal): Promise<string | undefined> {
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(VERSION_FETCH_TIMEOUT_MS) })
+    const timeout = AbortSignal.timeout(VERSION_FETCH_TIMEOUT_MS)
+    const response = await fetch(url, { signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]) })
     if (!response.ok) return undefined
     let text = await response.text()
     if (maxChars !== undefined) text = text.slice(0, maxChars)
     const match = text.match(VERSION_REGEX)
     return match === null ? undefined : match[0]
-  } catch {
+  } catch (error) {
+    if (signal?.aborted === true) throw error
     return undefined
   }
 }
@@ -148,15 +152,20 @@ export function antigravityAuthorizeUrl(cfg: AntigravityConfig, pkce: Pkce): str
 }
 
 /**
- * Headers for project discovery (loadCodeAssist): the reference keeps the
- * plain SDK identity here, mirroring its project.js loadHeaders.
+ * Preserve the SDK discovery identity first. A no-project UNSUPPORTED_CLIENT
+ * response can be retried with the same Antigravity identity as generation.
  */
-function loadHeaders(projectId: string): Record<string, string> {
+function loadHeaders(projectId: string, identity: 'sdk' | 'antigravity'): Record<string, string> {
   return {
-    'User-Agent': 'google-api-nodejs-client/9.15.1',
+    'User-Agent': identity === 'antigravity' ? antigravityUserAgent() : 'google-api-nodejs-client/9.15.1',
     'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
     'Client-Metadata': JSON.stringify(clientMetadata(projectId)),
   }
+}
+
+function antigravityUserAgent(): string {
+  const uaPlatform = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'Windows NT 10.0; Win64; x64'
+  return `Mozilla/5.0 (${uaPlatform}) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/${getAntigravityVersion()} Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36`
 }
 
 /**
@@ -166,9 +175,8 @@ function loadHeaders(projectId: string): Record<string, string> {
  * SDK UA here is what produced 403 #3501 on personal accounts.
  */
 function contentHeaders(projectId: string): Record<string, string> {
-  const uaPlatform = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'Windows NT 10.0; Win64; x64'
   return {
-    'User-Agent': `Mozilla/5.0 (${uaPlatform}) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/${getAntigravityVersion()} Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36`,
+    'User-Agent': antigravityUserAgent(),
     'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
     'Client-Metadata': JSON.stringify(clientMetadata(projectId)),
   }
@@ -254,34 +262,47 @@ export async function antigravityResolveProjectContext(blob: SubscriptionBlob, s
   signal?.throwIfAborted()
   const metadata = clientMetadata('')
   const diagnostics: string[] = []
-  for (const base of LOAD_ENDPOINTS) {
-    const label = `loadCodeAssist ${new URL(base).hostname}`
-    try {
-      const response = await fetch(`${base}/v1internal:loadCodeAssist`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${blob.accessToken}`, ...loadHeaders('') },
-        body: JSON.stringify({ metadata }),
-        signal: signal === undefined ? AbortSignal.timeout(25_000) : AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
-      })
-      if (!response.ok) {
-        diagnostics.push(`${label}: ${httpDiagnostic(response.status, await response.text().catch(() => ''), blob)}`)
-        continue
+  const identityRetryEndpoints: string[] = []
+  for (const identity of ['sdk', 'antigravity'] as const) {
+    const endpoints = identity === 'sdk' ? LOAD_ENDPOINTS : identityRetryEndpoints
+    if (identity === 'antigravity') {
+      if (endpoints.length === 0) break
+      await initAntigravityVersion(signal)
+    }
+    for (const base of endpoints) {
+      signal?.throwIfAborted()
+      const label = `loadCodeAssist ${new URL(base).hostname}${identity === 'antigravity' ? ` [Antigravity/${getAntigravityVersion()}]` : ''}`
+      try {
+        const response = await fetch(`${base}/v1internal:loadCodeAssist`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${blob.accessToken}`, ...loadHeaders('', identity) },
+          body: JSON.stringify({ metadata }),
+          signal: signal === undefined ? AbortSignal.timeout(25_000) : AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
+        })
+        if (!response.ok) {
+          diagnostics.push(`${label}: ${httpDiagnostic(response.status, await response.text().catch(() => ''), blob)}`)
+          continue
+        }
+        const payload = recordOf(await response.json().catch(() => null))
+        if (payload === undefined) {
+          diagnostics.push(`${label}: HTTP ${String(response.status)}, invalid response`)
+          continue
+        }
+        const project = payload.cloudaicompanionProject
+        const projectRecord = recordOf(project)
+        const id = typeof project === 'string' ? project
+          : typeof projectRecord?.id === 'string' ? projectRecord.id
+          : ''
+        if (id.trim().length > 0) return { projectId: id.trim(), source: 'account', diagnostics }
+        diagnostics.push(`${label}: HTTP ${String(response.status)}, ${missingProjectDiagnostic(payload, blob)}`)
+        if (identity === 'sdk' && Array.isArray(payload.ineligibleTiers)
+          && payload.ineligibleTiers.some(tier => recordOf(tier)?.reasonCode === 'UNSUPPORTED_CLIENT')) {
+          identityRetryEndpoints.push(base)
+        }
+      } catch (error) {
+        if (signal?.aborted === true) throw error
+        diagnostics.push(`${label}: ${diagnosticText(error instanceof Error ? error.message : 'request failed', blob)}`)
       }
-      const payload = recordOf(await response.json().catch(() => null))
-      if (payload === undefined) {
-        diagnostics.push(`${label}: HTTP ${String(response.status)}, invalid response`)
-        continue
-      }
-      const project = payload.cloudaicompanionProject
-      const projectRecord = recordOf(project)
-      const id = typeof project === 'string' ? project
-        : typeof projectRecord?.id === 'string' ? projectRecord.id
-        : ''
-      if (id.trim().length > 0) return { projectId: id.trim(), source: 'account', diagnostics }
-      diagnostics.push(`${label}: HTTP ${String(response.status)}, ${missingProjectDiagnostic(payload, blob)}`)
-    } catch (error) {
-      if (signal?.aborted === true) throw error
-      diagnostics.push(`${label}: ${diagnosticText(error instanceof Error ? error.message : 'request failed', blob)}`)
     }
   }
   return { projectId: DEFAULT_PROJECT_ID, source: 'fallback', diagnostics }
@@ -404,7 +425,7 @@ export async function antigravityGenerateImage(options: {
   options.signal?.throwIfAborted()
   // Content requests carry the browser UA with the client version, which the
   // license check keys on; warm the fetched version before building headers.
-  await initAntigravityVersion()
+  await initAntigravityVersion(options.signal)
   const inner = antigravityImageBody({
     prompt: options.prompt,
     ...(options.aspectRatio !== undefined ? { aspectRatio: options.aspectRatio } : {}),
