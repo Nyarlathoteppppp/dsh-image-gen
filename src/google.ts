@@ -1,6 +1,7 @@
 /** Google Gemini Interactions API adapter. */
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { AspectRatio, ImageSize } from './config.js'
+import { guardedFetch, readResponseBody } from './fetch-diagnostics.js'
 import { redactSecrets } from './redact.js'
 import { detectImageMediaType } from './reference-image.js'
 
@@ -71,7 +72,7 @@ async function requestGoogleImage(input: GoogleRequestBase & {
   interactionInput: string | Array<Record<string, string>>
 }): Promise<GeneratedImage> {
   const label = `Google image ${input.operation}`
-  const response = await fetch(input.endpoint, {
+  const response = await guardedFetch(`${label} request`, input.signal, () => fetch(input.endpoint, {
     method: 'POST',
     redirect: 'error',
     signal: input.signal,
@@ -86,7 +87,7 @@ async function requestGoogleImage(input: GoogleRequestBase & {
         image_size: input.imageSize,
       },
     }),
-  })
+  }), input.apiKey)
   const text = await readBoundedText(response, Math.ceil(input.maxBytes * 1.4) + ERROR_LIMIT, label)
   if (!response.ok) throw new Error(`${label} failed (${response.status}): ${redactSecrets(text, input.apiKey).slice(0, ERROR_LIMIT)}`)
   let payload: unknown
@@ -153,7 +154,7 @@ async function readBoundedText(response: Response, maxBytes: number, label: stri
   let bytes = 0
   try {
     for (;;) {
-      const next = await reader.read()
+      const next = await readResponseBody(response, () => reader.read())
       if (next.done) break
       bytes += next.value.byteLength
       if (bytes > maxBytes) throw new Error(`${label} response exceeded the ${String(maxBytes)} byte limit`)

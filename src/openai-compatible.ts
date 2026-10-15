@@ -1,5 +1,6 @@
 /** OpenAI Images API and compatible response adapter. */
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import { guardedFetch, readResponseBody } from './fetch-diagnostics.js'
 import { redactSecrets } from './redact.js'
 import { detectImageMediaType } from './reference-image.js'
 import { arkOutputBody, type ArkOutputOptions } from './shared.js'
@@ -38,7 +39,7 @@ export async function generateOpenAICompatibleImage(input: {
   /** Ark-only output controls; ignored by every other provider. */
   arkOptions?: ArkOutputOptions
 }): Promise<GeneratedCompatibleImage> {
-  const response = await fetch(imageEndpoint(input.baseURL, 'generations'), {
+  const response = await guardedFetch(`${input.provider} image request`, input.signal, () => fetch(imageEndpoint(input.baseURL, 'generations'), {
     method: 'POST', redirect: 'error', signal: input.signal,
     headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -52,7 +53,7 @@ export async function generateOpenAICompatibleImage(input: {
       ...(input.provider === 'seedream' ? { response_format: 'url', ...arkOutputBody(input.arkOptions, { background: false }) } : {}),
       ...(input.extraBody ?? {}),
     }),
-  })
+  }), input.apiKey)
   return parseImageResponse(response, input.provider, input)
 }
 
@@ -93,7 +94,7 @@ export async function editOpenAICompatibleImage(input: {
 }): Promise<GeneratedCompatibleImage> {
   if (input.editFormat === 'qwenJson') {
     // Qwen's official compatible API edits through images/generations, using image URLs directly.
-    const response = await fetch(imageEndpoint(input.baseURL, 'generations'), {
+    const response = await guardedFetch('openai-compat image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'generations'), {
       method: 'POST', redirect: 'error', signal: input.signal,
       headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -105,12 +106,12 @@ export async function editOpenAICompatibleImage(input: {
         ...(input.editExtra ?? {}),
         ...(input.extraBody ?? {}),
       }),
-    })
+    }), input.apiKey)
     return parseImageResponse(response, 'openai-compat', input)
   }
   if (input.editFormat === 'xaiJson') {
     const references = input.sourceImages.map(image => ({ type: 'image_url', url: toDataUrl(image) }))
-    const response = await fetch(imageEndpoint(input.baseURL, 'edits'), {
+    const response = await guardedFetch('xai image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'edits'), {
       method: 'POST', redirect: 'error', signal: input.signal,
       headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -120,7 +121,7 @@ export async function editOpenAICompatibleImage(input: {
         ...(input.quality === undefined ? {} : { quality: input.quality }),
         ...(input.extraBody ?? {}),
       }),
-    })
+    }), input.apiKey)
     return parseImageResponse(response, 'xai', input)
   }
   if (input.editFormat === 'jsonImageUrlArray') {
@@ -137,11 +138,11 @@ export async function editOpenAICompatibleImage(input: {
       ...(input.editExtra ?? {}),
       ...(input.extraBody ?? {}),
     }
-    const response = await fetch(imageEndpoint(input.baseURL, 'edits'), {
+    const response = await guardedFetch('openai image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'edits'), {
       method: 'POST', redirect: 'error', signal: input.signal,
       headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-    })
+    }), input.apiKey)
     return parseImageResponse(response, 'openai', input)
   }
   if (input.editFormat === 'formReferenceImages') {
@@ -155,11 +156,11 @@ export async function editOpenAICompatibleImage(input: {
     for (const [key, value] of Object.entries(input.extraBody ?? {})) form.append(key, String(value))
     form.append('response_format', 'b64_json')
     form.append('reference_images', JSON.stringify(input.sourceImages.map(sourceImage => Buffer.from(sourceImage.data).toString('base64'))))
-    const response = await fetch(imageEndpoint(input.baseURL, 'edits'), {
+    const response = await guardedFetch('openai image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'edits'), {
       method: 'POST', redirect: 'error', signal: input.signal,
       headers: { authorization: `Bearer ${input.apiKey}` },
       body: form,
-    })
+    }), input.apiKey)
     return parseImageResponse(response, 'openai', input)
   }
   const form = new FormData()
@@ -176,11 +177,11 @@ export async function editOpenAICompatibleImage(input: {
   if (input.quality !== undefined) form.append('quality', input.quality)
   for (const [key, value] of Object.entries(input.extraBody ?? {})) form.append(key, String(value))
 
-  const response = await fetch(imageEndpoint(input.baseURL, 'edits'), {
+  const response = await guardedFetch('openai image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'edits'), {
     method: 'POST', redirect: 'error', signal: input.signal,
     headers: { authorization: `Bearer ${input.apiKey}` },
     body: form,
-  })
+  }), input.apiKey)
   return parseImageResponse(response, 'openai', input)
 }
 
@@ -243,10 +244,10 @@ async function downloadImage(
     const data = decodeBase64(parsed.base64, provider)
     return { data, mediaType: detectImageMediaType(data) ?? imageMediaType(parsed.mediaType) ?? 'image/png' }
   }
-  let response = await fetch(url, {
+  let response = await guardedFetch(`${provider} image download`, input.signal, () => fetch(url, {
     redirect: 'follow', signal: input.signal,
     ...(input.apiKey === undefined ? {} : { headers: { authorization: `Bearer ${input.apiKey}` } }),
-  })
+  }), input.apiKey)
   // Some relay CDNs (e.g. Agnes AI, SenseNova's OSS) reject image downloads
   // that carry an Authorization header (WAF rules), even though the URL is
   // public - and not always with 401/403 (SenseNova's OSS answers 400).
@@ -254,7 +255,7 @@ async function downloadImage(
   // and only ever turns a guaranteed failure into a possible success: URLs
   // that genuinely need auth would have failed anyway.
   if (!response.ok && input.apiKey !== undefined) {
-    response = await fetch(url, { redirect: 'follow', signal: input.signal })
+    response = await guardedFetch(`${provider} image download`, input.signal, () => fetch(url, { redirect: 'follow', signal: input.signal }), input.apiKey)
   }
   if (!response.ok) throw new Error(`${provider} image download failed (${response.status})`)
   const data = await readBoundedBytes(response, input.maxBytes)
@@ -296,7 +297,7 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
 async function readBoundedBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
   if (response.body === null) return new Uint8Array()
   const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0
-  try { for (;;) { const next = await reader.read(); if (next.done) break; bytes += next.value.byteLength; if (bytes > maxBytes) throw new Error(`Image response exceeded the ${String(maxBytes)} byte limit`); chunks.push(next.value) } } finally { reader.releaseLock() }
+  try { for (;;) { const next = await readResponseBody(response, () => reader.read()); if (next.done) break; bytes += next.value.byteLength; if (bytes > maxBytes) throw new Error(`Image response exceeded the ${String(maxBytes)} byte limit`); chunks.push(next.value) } } finally { reader.releaseLock() }
   const joined = new Uint8Array(bytes); let offset = 0
   for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength }
   return joined

@@ -1,5 +1,6 @@
 /** DashScope Qwen Image generation and editing adapter. */
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import { guardedFetch, readResponseBody } from './fetch-diagnostics.js'
 import { redactSecrets } from './redact.js'
 import { detectImageMediaType } from './reference-image.js'
 
@@ -105,7 +106,7 @@ async function requestQwenImage(options: DashScopeImageOptions & {
   operation: 'generation' | 'editing'
 }): Promise<{ data: Uint8Array; mediaType: ImageAttachmentRef['mediaType'] }> {
   const base = options.endpoint.replace(/\/+$/, '')
-  const response = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
+  const response = await guardedFetch(`DashScope image ${options.operation}`, options.signal, () => fetch(`${base}/services/aigc/multimodal-generation/generation`, {
     method: 'POST',
     ...(options.signal ? { signal: options.signal } : {}),
     headers: {
@@ -113,14 +114,14 @@ async function requestQwenImage(options: DashScopeImageOptions & {
       authorization: `Bearer ${options.apiKey}`,
     },
     body: JSON.stringify(options.requestBody),
-  })
+  }), options.apiKey)
 
   if (!response.ok) {
-    const errorText = redactSecrets(await response.text(), options.apiKey)
+    const errorText = redactSecrets(await readResponseBody(response, () => response.text()), options.apiKey)
     throw new Error(`DashScope image ${options.operation} failed (${String(response.status)}): ${errorText}`)
   }
 
-  const payload = (await response.json()) as DashScopeResponse
+  const payload = JSON.parse(await readResponseBody(response, () => response.text())) as DashScopeResponse
   const imageUrl = extractImageUrl(payload)
   if (imageUrl === undefined) {
     throw new Error(`DashScope image ${options.operation} returned no image URL: ${redactSecrets(payload.message ?? JSON.stringify(payload), options.apiKey)}`)
@@ -143,13 +144,13 @@ async function downloadImageBlob(
   imageUrl: string,
   options: DashScopeImageOptions,
 ): Promise<{ data: Uint8Array; mediaType: ImageAttachmentRef['mediaType'] }> {
-  const imageResponse = await fetch(imageUrl, {
+  const imageResponse = await guardedFetch('DashScope image download', options.signal, () => fetch(imageUrl, {
     ...(options.signal ? { signal: options.signal } : {}),
-  })
+  }), options.apiKey)
   if (!imageResponse.ok) {
     throw new Error(`Failed to fetch DashScope image from URL (${String(imageResponse.status)})`)
   }
-  const buffer = await imageResponse.arrayBuffer()
+  const buffer = await readResponseBody(imageResponse, () => imageResponse.arrayBuffer())
   if (buffer.byteLength > options.maxBytes) {
     throw new Error(`DashScope generated image (${String(buffer.byteLength)} bytes) exceeds the ${String(options.maxBytes)} byte limit`)
   }
