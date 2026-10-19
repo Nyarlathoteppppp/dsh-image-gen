@@ -183,6 +183,7 @@ pnpm dsh plugin --profile web add ./dsh-image-gen
 在无限画布中表达你的创意，通过对话将草稿、构图和想法转化为真实图片。
 
 - 在画布中自由绘制草稿、添加参考素材并组织创意。
+- 将「最近生成」或图库中的图片拖入画布，或点击缩略图上的「发送到画布」。请先打开无限画布并等待图片加载完成；同一张历史图片重复导入会自动去重。
 - 通过自然语言与 AI 对话，让草稿快速变成完整作品。
 - 基于已有结果持续编辑、修改和生成新的方向，保留创作过程，让每一次探索都可以继续迭代。
 
@@ -375,6 +376,15 @@ dsh --profile web --dump-config
 <summary><strong>生成图片保存在哪里？</strong></summary>
 
 开启“保存到工作区”后，对话生成结果默认保存在当前工作区的 `dsh-image-gen/` 子目录，也可以在设置中修改。Studio 候选图先留在临时画布，只有用户选中的结果才会进入图库并保存。
+
+</details>
+
+<details>
+<summary><strong>Gemini 中转只支持 generateContent，如何配置？</strong></summary>
+
+在 Google Gemini 设置中，将“请求协议”改为“原生 generateContent”，接口地址填写中转的 API 基础地址，例如 `https://your-relay.example/v1beta`，保存后即可用于对话生图、图生图和 Studio。已有的 Interactions 完整地址也可以沿用，插件会按所选模型构建原生请求地址。
+
+配置文件对应 `googleNative: true`；默认值为 `false`，现有用户仍使用 Interactions 协议。
 
 </details>
 

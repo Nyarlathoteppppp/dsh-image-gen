@@ -183,6 +183,7 @@ For more precise parameter control, open **Gallery** from the conversation heade
 Express your ideas on an infinite canvas and turn drafts, compositions, and thoughts into real images through conversation.
 
 - Freely sketch, add reference materials, and organize your ideas on the canvas.
+- Drag images from Recent generations or the Gallery onto the canvas, or click Send to canvas on a thumbnail. Open the infinite canvas and wait for the image to load first; repeated imports of the same history item are deduplicated.
 - Talk to the AI in natural language to turn a draft into a finished piece.
 - Keep editing, refining, and exploring new directions from existing results—your creative process is preserved so every exploration stays iterable.
 
@@ -375,6 +376,15 @@ If `dsh-image-gen` is absent from the output, run the installation command again
 <summary><strong>Where are generated images saved?</strong></summary>
 
 When “Save to workspace” is enabled, chat results are saved to the `dsh-image-gen/` subdirectory of the current workspace by default. You can change this directory in Settings. Studio candidates remain on the temporary canvas until you select which results should enter the gallery and be saved.
+
+</details>
+
+<details>
+<summary><strong>How do I use a Gemini relay that only supports generateContent?</strong></summary>
+
+In Google Gemini settings, select “Native generateContent” under “Request protocol”, enter the relay's API base URL (for example, `https://your-relay.example/v1beta`), and save. This applies to conversation generation, editing, and Studio. An existing full Interactions URL can also be kept; the plugin builds the native endpoint using the selected model.
+
+The configuration field is `googleNative: true`. It defaults to `false`, keeping existing users on the Interactions protocol.
 
 </details>
 
