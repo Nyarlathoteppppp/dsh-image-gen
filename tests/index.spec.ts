@@ -33,15 +33,20 @@ function execWithUserImages(...ids: string[]): never {
   } as never
 }
 
-function harnessContext(): { ctx: Context; tools: ToolDefinition[]; installSection: ReturnType<typeof vi.fn> } {
+function harnessContext(options: { webServer?: boolean } = {}): { ctx: Context; tools: ToolDefinition[]; installSection: ReturnType<typeof vi.fn> } {
   const tools: ToolDefinition[] = []
   const installSection = vi.fn()
+  const hasWebServer = options.webServer ?? true
   const ctx = {
     tools: { register: (tool: ToolDefinition) => { tools.push(tool) } },
     effect: (setup: () => unknown) => setup(),
-    webServer: { register: vi.fn(() => () => {}) },
+    ...(hasWebServer ? { webServer: { register: vi.fn(() => () => {}) } } : {}),
     credentials: { resolve: vi.fn(async () => ({ value: 'test-key' })) },
     inject: (services: readonly string[], callback: (owner: unknown) => void) => {
+      if (services.includes('webServer')) {
+        if (hasWebServer) callback(ctx)
+        return
+      }
       if (services.includes('settings')) callback({ settings: { installSection } })
     },
     attachments: {
@@ -126,6 +131,29 @@ describe('image tool registration', () => {
     const { ctx, tools } = harnessContext()
     apply(ctx, { provider: 'google', saveToWorkspace: false })
     expect(tools.map(tool => tool.name)).toEqual(['canvas_state', 'view_canvas', 'generate_image', 'generate_images', 'edit_image', 'find_inspiration'])
+  })
+
+  it('does not require webServer, so headless, acp and sdk profiles can activate it', async () => {
+    const plugin = await import('../src/index.js')
+    expect(plugin.inject).not.toContain('webServer')
+  })
+
+  it('registers every tool without a webServer and mounts no routes', async () => {
+    const { ctx, tools } = harnessContext({ webServer: false })
+    apply(ctx, { provider: 'google', googleNative: true, googleEndpoint: 'https://relay.example/v1beta', googleModel: 'gemini-3-pro-image', saveToWorkspace: false })
+    expect(tools.map(tool => tool.name)).toEqual(['canvas_state', 'view_canvas', 'generate_image', 'generate_images', 'edit_image', 'find_inspiration'])
+    const fetchMock = vi.fn(async () => Response.json({ candidates: [{ content: { parts: [{ inlineData: { data: 'iVBORw0KGgo=', mimeType: 'image/png' } }] } }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    await toolByName(tools, 'generate_image').execute({ prompt: 'one' }, { signal: new AbortController().signal } as never)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('mounts the same HTTP routes as before when a webServer is present', () => {
+    const { ctx } = harnessContext()
+    apply(ctx, { provider: 'google', saveToWorkspace: false })
+    const paths = vi.mocked((ctx as unknown as { webServer: { register: (route: { path: string }) => unknown } }).webServer.register).mock.calls.map(([route]) => route.path)
+    expect(paths).toHaveLength(12)
+    expect(new Set(paths).size).toBe(12)
   })
 
   it('serves reusable inspiration prompts to the agent with bounded hits', async () => {

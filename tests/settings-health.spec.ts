@@ -11,6 +11,7 @@ function harness(settings?: object) {
     webServer: { register: (route: typeof routes[number]) => { routes.push(route); return () => {} } },
     credentials: {}, attachments: {}, logger: { warn },
     inject: (services: string[], callback: (owner: unknown) => unknown) => {
+      if (services.includes('webServer')) return callback(ctx)
       if (services.includes('settings') && settings !== undefined) return callback({ settings })
     },
   }

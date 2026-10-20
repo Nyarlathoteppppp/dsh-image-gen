@@ -19,6 +19,7 @@ function harness(options: { settingsService?: unknown } = {}): { ctx: Context; t
     webServer: { register: vi.fn(() => () => {}) },
     credentials: { resolve: vi.fn(async () => ({ value: 'test-key' })) },
     inject: vi.fn((services: string[], callback: (owner: Context) => void) => {
+      if (services.includes('webServer')) callback(ctx)
       if (services.includes('settings') && options.settingsService !== undefined) {
         callback({ settings: options.settingsService } as unknown as Context)
       }

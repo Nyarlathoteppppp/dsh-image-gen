@@ -41,7 +41,7 @@ export { TEST_CONNECTION_ROUTE } from './shared.js'
 export { CANVAS_STATE_ROUTE } from './shared.js'
 
 export const name = 'dsh-image-gen'
-export const inject = ['tools', 'attachments', 'credentials', 'webServer']
+export const inject = ['tools', 'attachments', 'credentials']
 
 interface GeneratedValue {
   attachment: ImageAttachmentRef
@@ -113,85 +113,90 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Subscription image accounts: login flows, blob storage, refresh, and the
   // vendor wire calls. One instance per application; tokens stay host-side.
   const subscriptionManager = new SubscriptionManager(ctx)
-  registerSubscriptionRoutes(ctx, subscriptionManager)
 
   const settingsHealth = installImageSettings(ctx, current(), {
     setSource: source => { current = () => migrateOpenAICompatConfig(plainConfig(source())) },
     onChange: () => {},
   })
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: SETTINGS_HEALTH_ROUTE,
-    handler: (req, res) => serveSettingsHealth(req, res, settingsHealth()),
-  }), 'dsh-image-gen: settings health')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: IMAGE_ROUTE,
-    handler: (req, res) => serveImage(req, res, { readImage: ref => ctx.attachments.readImage(ref) }),
-  }), 'dsh-image-gen: image route')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: IMPORT_ROUTE,
-    handler: (req, res) => serveImport(req, res, {
-      saveImage: image => ctx.attachments.saveImage(image),
-      maxImageBytes: ctx.attachments.imageLimits.maxImageBytes,
-      mediaTypes: ctx.attachments.imageLimits.mediaTypes,
-    }),
-  }), 'dsh-image-gen: import route')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: DELETE_ROUTE,
-    handler: (req, res) => serveDelete(req, res, {
-      deleteWorkspaceImage: async filePath => {
-        const discovered = await getDshWorkspaceRoots().catch(() => [])
-        return deleteImageFromWorkspace(filePath, new Set([...knownWorkspaceRoots, ...discovered, process.cwd()]))
-      },
-    }),
-  }), 'dsh-image-gen: delete route')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: SAVE_WORKSPACE_ROUTE,
-    handler: (req, res) => serveSaveWorkspace(req, res, {
-      readImage: ref => ctx.attachments.readImage(ref),
-      saveToWorkspace: options => {
-        if (options.workspaceRoot) {
-          knownWorkspaceRoots.add(options.workspaceRoot)
-        }
-        return saveImageToWorkspace({
-          workspaceRoot: options.workspaceRoot,
-          folder: current().workspaceFolder,
-          attachmentId: options.attachmentId,
-          mediaType: options.mediaType,
-          data: options.data,
-        })
-      },
-      getActiveWorkspaceRoot: () => Array.from(knownWorkspaceRoots)[0] || process.cwd(),
-      getAllowedWorkspaceRoots: async () => {
-        const discovered = await getDshWorkspaceRoots().catch(() => [])
-        return new Set([...knownWorkspaceRoots, ...discovered, process.cwd()])
-      },
-      isSaveEnabled: () => current().saveToWorkspace !== false,
-    }),
-  }), 'dsh-image-gen: save workspace route')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: TEST_CONNECTION_ROUTE,
-    handler: (req, res) => serveTestConnection(req, res, {
-      resolveKey: provider => resolveApiKey(ctx, provider),
-      config: () => current(),
-      subscriptionManager,
-    }),
-  }), 'dsh-image-gen: test connection route')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: CANVAS_STATE_ROUTE,
-    handler: (req, res) => serveCanvasState(req, res, {
-      mirror: canvasMirror,
-      // Base64 inflates the PNG by ~4/3; the slack covers the JSON envelope.
-      maxBodyBytes: Math.ceil(ctx.attachments.imageLimits.maxImageBytes * 1.4) + 256 * 1024,
-      maxImageBytes: ctx.attachments.imageLimits.maxImageBytes,
-    }),
-  }), 'dsh-image-gen: canvas state route')
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: CANVAS_ASSET_ROUTE,
-    handler: (req, res) => serveCanvasAsset(req, res, {
-      maxImageBytes: ctx.attachments.imageLimits.maxImageBytes,
-      saveImage: image => ctx.attachments.saveImage(image),
-    }),
-  }), 'dsh-image-gen: canvas asset route')
+  // Every HTTP surface needs webServer, which only the web-app bundle (web,
+  // desktop) provides; the headless, acp and sdk profiles have none. Mount the
+  // routes when it is present so the tools below still activate without it.
+  ctx.inject(['webServer'], (webCtx: Context) => {
+    registerSubscriptionRoutes(webCtx, subscriptionManager)
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: SETTINGS_HEALTH_ROUTE,
+      handler: (req, res) => serveSettingsHealth(req, res, settingsHealth()),
+    }), 'dsh-image-gen: settings health')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: IMAGE_ROUTE,
+      handler: (req, res) => serveImage(req, res, { readImage: ref => ctx.attachments.readImage(ref) }),
+    }), 'dsh-image-gen: image route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: IMPORT_ROUTE,
+      handler: (req, res) => serveImport(req, res, {
+        saveImage: image => ctx.attachments.saveImage(image),
+        maxImageBytes: ctx.attachments.imageLimits.maxImageBytes,
+        mediaTypes: ctx.attachments.imageLimits.mediaTypes,
+      }),
+    }), 'dsh-image-gen: import route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: DELETE_ROUTE,
+      handler: (req, res) => serveDelete(req, res, {
+        deleteWorkspaceImage: async filePath => {
+          const discovered = await getDshWorkspaceRoots().catch(() => [])
+          return deleteImageFromWorkspace(filePath, new Set([...knownWorkspaceRoots, ...discovered, process.cwd()]))
+        },
+      }),
+    }), 'dsh-image-gen: delete route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: SAVE_WORKSPACE_ROUTE,
+      handler: (req, res) => serveSaveWorkspace(req, res, {
+        readImage: ref => ctx.attachments.readImage(ref),
+        saveToWorkspace: options => {
+          if (options.workspaceRoot) {
+            knownWorkspaceRoots.add(options.workspaceRoot)
+          }
+          return saveImageToWorkspace({
+            workspaceRoot: options.workspaceRoot,
+            folder: current().workspaceFolder,
+            attachmentId: options.attachmentId,
+            mediaType: options.mediaType,
+            data: options.data,
+          })
+        },
+        getActiveWorkspaceRoot: () => Array.from(knownWorkspaceRoots)[0] || process.cwd(),
+        getAllowedWorkspaceRoots: async () => {
+          const discovered = await getDshWorkspaceRoots().catch(() => [])
+          return new Set([...knownWorkspaceRoots, ...discovered, process.cwd()])
+        },
+        isSaveEnabled: () => current().saveToWorkspace !== false,
+      }),
+    }), 'dsh-image-gen: save workspace route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: TEST_CONNECTION_ROUTE,
+      handler: (req, res) => serveTestConnection(req, res, {
+        resolveKey: provider => resolveApiKey(ctx, provider),
+        config: () => current(),
+        subscriptionManager,
+      }),
+    }), 'dsh-image-gen: test connection route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: CANVAS_STATE_ROUTE,
+      handler: (req, res) => serveCanvasState(req, res, {
+        mirror: canvasMirror,
+        // Base64 inflates the PNG by ~4/3; the slack covers the JSON envelope.
+        maxBodyBytes: Math.ceil(ctx.attachments.imageLimits.maxImageBytes * 1.4) + 256 * 1024,
+        maxImageBytes: ctx.attachments.imageLimits.maxImageBytes,
+      }),
+    }), 'dsh-image-gen: canvas state route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: CANVAS_ASSET_ROUTE,
+      handler: (req, res) => serveCanvasAsset(req, res, {
+        maxImageBytes: ctx.attachments.imageLimits.maxImageBytes,
+        saveImage: image => ctx.attachments.saveImage(image),
+      }),
+    }), 'dsh-image-gen: canvas asset route')
+  })
   // A few lines of live canvas context per model request. The service is an
   // optional dependency: hosts without dsh-system-prompt boot unchanged and
   // the canvas tools remain the model's way to discover the canvas.
@@ -208,35 +213,37 @@ export function apply(ctx: Context, config: Config = {}): void {
     // views, and dead screenshots never reach the disk.
     persistSelectionImage: image => ctx.attachments.saveImage({ data: image.data, mediaType: image.mediaType, name: 'canvas-selection' }),
   })
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact', path: STUDIO_ROUTE,
-    handler: (req, res) => serveStudio(req, res, {
-      describe: async () => {
-        const base = await describeStudio(ctx, current(), subscriptionManager)
-        const workspaces = await getDshWorkspacesFull().catch(() => [])
-        const activeRoot = Array.from(knownWorkspaceRoots)[0] || workspaces[0]?.path || process.cwd()
-        return {
-          ...base,
-          workspaceRoot: activeRoot,
-          workspaces,
-        }
+  ctx.inject(['webServer'], (webCtx: Context) => {
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact', path: STUDIO_ROUTE,
+      handler: (req, res) => serveStudio(req, res, {
+        describe: async () => {
+          const base = await describeStudio(ctx, current(), subscriptionManager)
+          const workspaces = await getDshWorkspacesFull().catch(() => [])
+          const activeRoot = Array.from(knownWorkspaceRoots)[0] || workspaces[0]?.path || process.cwd()
+          return {
+            ...base,
+            workspaceRoot: activeRoot,
+            workspaces,
+          }
+        },
+        generate: (input, signal) => {
+          const fallbackRoot = Array.from(knownWorkspaceRoots)[0] || process.cwd()
+          return generateFromStudio(ctx, current(), input, signal, fallbackRoot, subscriptionManager)
+        },
+        maxBodyBytes: Math.ceil(ctx.attachments.imageLimits.maxImageBytes * 1.4 * 5) + 256 * 1024,
+      }),
+    }), 'dsh-image-gen: studio route')
+    const serveInspiration = createInspirationRoute()
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'prefix', path: INSPIRATION_ROUTE,
+      handler: (req, res) => {
+        const originalUrl = req.url ?? '/'
+        req.url = originalUrl.startsWith(INSPIRATION_ROUTE) ? originalUrl.slice(INSPIRATION_ROUTE.length) || '/' : originalUrl
+        return serveInspiration(req, res)
       },
-      generate: (input, signal) => {
-        const fallbackRoot = Array.from(knownWorkspaceRoots)[0] || process.cwd()
-        return generateFromStudio(ctx, current(), input, signal, fallbackRoot, subscriptionManager)
-      },
-      maxBodyBytes: Math.ceil(ctx.attachments.imageLimits.maxImageBytes * 1.4 * 5) + 256 * 1024,
-    }),
-  }), 'dsh-image-gen: studio route')
-  const serveInspiration = createInspirationRoute()
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'prefix', path: INSPIRATION_ROUTE,
-    handler: (req, res) => {
-      const originalUrl = req.url ?? '/'
-      req.url = originalUrl.startsWith(INSPIRATION_ROUTE) ? originalUrl.slice(INSPIRATION_ROUTE.length) || '/' : originalUrl
-      return serveInspiration(req, res)
-    },
-  }), 'dsh-image-gen: inspiration route')
+    }), 'dsh-image-gen: inspiration route')
+  })
 
   /** Per-item generation request shared by generate_image and generate_images. */
   const generateSingle = async (args: SingleGenerationArgs, exec: { agent?: { session: { header: { cwd?: string } } }; signal: AbortSignal }): Promise<GeneratedValue> => {
