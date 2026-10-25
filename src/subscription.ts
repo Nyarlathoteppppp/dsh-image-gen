@@ -25,16 +25,18 @@ export { SUBSCRIPTION_TIMEOUT_MS } from './shared.js'
 
 /** Translate image tool options into each subscription channel's wire inputs. */
 export function subscriptionToolParameters(provider: SubscriptionProvider, options: { size?: string; aspectRatio?: string; imageSize?: string }): { size?: string; quality?: string } {
-  if (options.size !== undefined && options.aspectRatio !== undefined) throw new Error('size 与 aspect_ratio 请只选一个')
-  const ratio = options.aspectRatio
+  const requestedSize = options.size?.trim() || undefined
+  const ratio = options.aspectRatio?.trim() || undefined
+  const imageSize = options.imageSize?.trim() || undefined
+  if (requestedSize !== undefined && ratio !== undefined) throw new Error('size 与 aspect_ratio 请只选一个；无关可选字段请省略，不要填写空字符串')
   if (ratio !== undefined && !SUBSCRIPTION_CAPABILITIES[provider].ratioOptions.some(option => option.value === ratio)) throw new Error(`${provider} 不支持比例 ${ratio}`)
-  const size = options.size ?? (ratio === undefined ? undefined : provider === 'chatgpt-sub' ? SUBSCRIPTION_CAPABILITIES[provider].sizeFor?.(ratio, 'auto') : ratio)
+  const size = requestedSize ?? (ratio === undefined ? undefined : provider === 'chatgpt-sub' ? SUBSCRIPTION_CAPABILITIES[provider].sizeFor?.(ratio, 'auto') : ratio)
   let quality: string | undefined
-  if (options.imageSize !== undefined) {
-    if (provider === 'grok-sub' && (options.imageSize === '1K' || options.imageSize === '2K')) quality = options.imageSize.toLowerCase()
-    else if (provider === 'google-sub' && options.imageSize === '4K') quality = 'hd'
-    else if (provider === 'google-sub' && options.imageSize === '1K') quality = undefined
-    else throw new Error(`${provider} 不支持清晰度 ${options.imageSize}`)
+  if (imageSize !== undefined) {
+    if (provider === 'grok-sub' && (imageSize === '1K' || imageSize === '2K')) quality = imageSize.toLowerCase()
+    else if (provider === 'google-sub' && imageSize === '4K') quality = 'hd'
+    else if (provider === 'google-sub' && imageSize === '1K') quality = undefined
+    else throw new Error(`${provider} 不支持清晰度 ${imageSize}；${provider === 'chatgpt-sub' ? '请省略 image_size，使用 size 或 aspect_ratio 指定尺寸' : `image_size 仅支持 ${provider === 'grok-sub' ? '1K、2K' : '1K、4K'}`}`)
   }
   return { ...(size === undefined ? {} : { size }), ...(quality === undefined ? {} : { quality }) }
 }

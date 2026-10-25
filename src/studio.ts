@@ -22,6 +22,7 @@ import {
   SUBSCRIPTION_PROVIDERS,
   isSubscriptionProvider,
   studioWatermarkCapability,
+  studioModelForMode,
   type CloudImageProvider,
   type StudioConfigResponse,
   type StudioGenerateRequest,
@@ -507,7 +508,8 @@ function subscriptionResponse(
 
 export function studioProfile(config: Config, provider: CloudImageProvider, configured: boolean): StudioProviderProfile {
   const result = cloudStudioProfile(config, provider, configured)
-  return { ...result, ...watermarkProfile(config, provider, result.model) }
+  const editModel = provider === 'openai-compat' ? config.openaiCompatEditModel?.trim() : undefined
+  return { ...result, ...(editModel ? { editModel } : {}), ...watermarkProfile(config, provider, result.model) }
 }
 
 function cloudStudioProfile(config: Config, provider: CloudImageProvider, configured: boolean): StudioProviderProfile {
@@ -600,7 +602,7 @@ function option(value: string): StudioOption {
 }
 
 function assertAllowed(profile: StudioProviderProfile, input: StudioGenerateRequest): void {
-  if (input.model !== profile.model) throw new Error('模型配置已变化，请刷新工作台后重试')
+  if (input.model !== studioModelForMode(profile, input.mode)) throw new Error('模型配置已变化，请刷新工作台后重试')
   if (!profile.ratioOptions.some(option => option.value === input.ratio)) throw new Error('该 Provider 不支持所选比例')
   const selectedQuality = input.provider === 'openai' ? input.generationQuality ?? input.quality : input.resolution ?? input.quality
   if (!profile.qualityOptions.some(option => option.value === selectedQuality)) throw new Error('该 Provider 不支持所选清晰度')

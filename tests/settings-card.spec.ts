@@ -86,6 +86,31 @@ beforeEach(() => { hooks.values = []; hooks.cursor = 0; hooks.scopeEffects = [] 
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('settings card credential actions', () => {
+  it.each(['zh', 'en'])('saves, reopens and clears the separate edit model with the SiliconFlow format in %s', async lang => {
+    const form = formHarness(lang, { openaiCompatBaseURL: 'https://relay.example/v1', openaiCompatModel: 'generation-model' })
+    const modelLabel = lang === 'zh' ? '图生图模型' : 'Editing model'
+    const formatLabel = lang === 'zh' ? '图生图请求形态' : 'Edit request format'
+    form.field(modelLabel, ' Qwen/Qwen-Image-Edit ')
+    form.field(formatLabel, 'siliconflowJson')
+    form.save()
+    await vi.waitFor(() => expect(form.setSetting).toHaveBeenCalledWith('openaiCompatEditFormat', 'siliconflowJson'))
+    expect(form.setSetting).toHaveBeenCalledWith('openaiCompatEditModel', 'Qwen/Qwen-Image-Edit')
+    expect(form.setSetting).toHaveBeenCalledWith('openaiCompatModel', 'generation-model')
+    hooks.values = []
+    form.expand()
+    expect(form.rowText()).toContain(lang === 'zh' ? '编辑尺寸由参考图决定' : 'Edit dimensions follow the reference')
+    form.field(modelLabel, '')
+    form.save()
+    await vi.waitFor(() => expect(form.setSetting).toHaveBeenCalledWith('openaiCompatEditModel', ''))
+  })
+
+  it('automatically recognizes the official SiliconFlow endpoint while keeping reference instructions visible', () => {
+    const form = formHarness('zh', { openaiCompatBaseURL: 'https://api.siliconflow.cn/v1', openaiCompatModel: 'Qwen/Qwen-Image', openaiCompatEditModel: 'Qwen/Qwen-Image-Edit-2509' })
+    expect(form.rowText()).toContain('自动：官方接口 JSON 格式')
+    expect(form.rowText()).toContain('Edit-2509 最多三张')
+    expect(form.rowText()).toContain('附加 JSON 字段')
+  })
+
   it.each(['拉取模型', '测试连接'])('requires saving a changed Google protocol before %s', action => {
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)

@@ -97,6 +97,8 @@ export interface Config {
   /** OpenAI-compatible relay settings; independent from the official OpenAI row. */
   openaiCompatBaseURL?: string
   openaiCompatModel?: string
+  /** Editing model; empty reuses the generation model. */
+  openaiCompatEditModel?: string
   /** Default quality; empty preserves the upstream default by omitting the field. */
   openaiCompatQuality?: string
   /** Quality values accepted by this relay; independent of resolution tiers. */
@@ -113,7 +115,7 @@ export interface Config {
     * `reference_images` field is a JSON array of base64 strings. Defaults to
     * `multipart`.
     */
-  openaiCompatEditFormat?: 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages'
+  openaiCompatEditFormat?: 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages' | 'siliconflowJson'
   /**
    * Extra JSON fields merged into the JSON edit body last (can override the
    * built-in defaults), e.g. SenseNova's `watermark`/`prompt_extend`.
@@ -200,11 +202,12 @@ export const Config = z.object({
   openaiSizes: volatile(z.dict(z.dict(z.string())).default({})),
   openaiCompatBaseURL: volatile(z.string().default('')),
   openaiCompatModel: volatile(z.string().default('')),
+  openaiCompatEditModel: volatile(z.string().default('')),
   openaiCompatQuality: volatile(z.string().default('')),
   openaiCompatQualityOptions: volatile(z.array(z.string()).default(['auto', 'low', 'medium', 'high'])),
   openaiCompatExtraBody: volatile(z.dict(z.any()).default({})),
   openaiCompatEditSizeMode: volatile(z.union(['auto', 'selected']).default('auto')),
-  openaiCompatEditFormat: volatile(z.union([z.const('multipart'), z.const('jsonImageUrlArray'), z.const('formReferenceImages')]).default('multipart')),
+  openaiCompatEditFormat: volatile(z.union([z.const('multipart'), z.const('jsonImageUrlArray'), z.const('formReferenceImages'), z.const('siliconflowJson')]).default('multipart')),
   openaiCompatEditExtra: volatile(z.dict(z.any()).default({})),
   openaiCompatSizes: volatile(z.dict(z.dict(z.string())).default({})),
   seedreamBaseURL: volatile(z.string().default(DEFAULT_SEEDREAM_BASE_URL)),
@@ -299,15 +302,14 @@ export function resolveProvider(config: Config):
  * Apply a per-call provider and/or model override on top of the saved config.
  * `model` is ignored for ComfyUI, whose per-call equivalent is `workflow`.
  */
-export function withProviderOverrides(config: Config, provider?: ImageProvider, model?: string): Config {
+export function withProviderOverrides(config: Config, provider?: ImageProvider, model?: string, mode: 'generate' | 'edit' = 'generate'): Config {
   const base: Config = provider === undefined ? { ...config } : { ...config, provider }
-  if (model === undefined) return base
-  const trimmed = model.trim()
+  const trimmed = model?.trim() || (mode === 'edit' && base.provider === 'openai-compat' ? base.openaiCompatEditModel?.trim() : '') || ''
   if (trimmed.length === 0) return base
   switch (base.provider ?? 'google') {
     case 'google': return { ...base, googleModel: trimmed }
     case 'openai': return { ...base, openaiModel: trimmed }
-    case 'openai-compat': return { ...base, openaiCompatModel: trimmed }
+    case 'openai-compat': return { ...base, openaiCompatModel: trimmed, ...(mode === 'edit' ? { openaiCompatEditModel: trimmed } : {}) }
     case 'seedream': return { ...base, seedreamModel: trimmed }
     case 'dashscope': return { ...base, dashscopeModel: trimmed }
     case 'xai': return { ...base, xaiModel: trimmed }

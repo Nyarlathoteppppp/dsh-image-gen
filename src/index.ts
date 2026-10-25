@@ -31,6 +31,7 @@ import { SETTINGS_HEALTH_ROUTE, type SettingsHealth } from './shared.js'
 import { deleteImageFromWorkspace, getDshWorkspaceRoots, getDshWorkspacesFull, saveImageToWorkspace } from './workspace-save.js'
 import { xaiToolParameters } from './xai-params.js'
 import { compatRequestQuality, officialQualityOptions, validateOfficialSize } from './openai-output.js'
+import { imageToolContext } from './image-tool-context.js'
 
 export { Config } from './config.js'
 export { IMAGE_ROUTE, DELETE_ROUTE, SAVE_WORKSPACE_ROUTE, imageAttachmentFromMeta } from './image-route.js'
@@ -70,6 +71,19 @@ interface SingleGenerationArgs {
   size?: string
   quality?: string
   workflow?: string
+}
+
+/** Optional strings from tool callers may contain empty placeholders (#86). */
+function cleanImageToolArgs<T extends SingleGenerationArgs>(args: T): T {
+  const clean = { ...args }
+  const fields = clean as Record<string, unknown>
+  for (const key of ['model', 'size', 'aspect_ratio', 'image_size', 'quality', 'workflow']) {
+    const value = fields[key]
+    if (typeof value !== 'string') continue
+    if (value.trim().length === 0) delete fields[key]
+    else fields[key] = value.trim()
+  }
+  return clean
 }
 
 /** Ordered per-item outcomes for the generate_images batch tool. */
@@ -201,11 +215,16 @@ export function apply(ctx: Context, config: Config = {}): void {
   // optional dependency: hosts without dsh-system-prompt boot unchanged and
   // the canvas tools remain the model's way to discover the canvas.
   ctx.inject(['systemPrompt'], (promptCtx: Context) => {
-    promptCtx.systemPrompt.context({
+    promptCtx.effect(() => promptCtx.systemPrompt.context({
+      name: 'dsh-image-gen:image-defaults',
+      order: 59,
+      text: () => imageToolContext(current()),
+    }), 'dsh-image-gen: image tool context')
+    promptCtx.effect(() => promptCtx.systemPrompt.context({
       name: 'dsh-image-gen:canvas',
       order: 60,
       text: () => canvasMirror.digest(),
-    })
+    }), 'dsh-image-gen: canvas context')
   })
   registerCanvasTools(ctx, canvasMirror, {
     // Materialization hook: view_canvas persists a screenshot only when the
@@ -246,7 +265,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   /** Per-item generation request shared by generate_image and generate_images. */
-  const generateSingle = async (args: SingleGenerationArgs, exec: { agent?: { session: { header: { cwd?: string } } }; signal: AbortSignal }): Promise<GeneratedValue> => {
+  const generateSingle = async (rawArgs: SingleGenerationArgs, exec: { agent?: { session: { header: { cwd?: string } } }; signal: AbortSignal }): Promise<GeneratedValue> => {
+    const args = cleanImageToolArgs(rawArgs)
     const active = resolveProvider(withProviderOverrides(current(), providerOverrideOf(args.provider), args.model))
     if (active.provider === 'comfyui') {
       const workflow = selectComfyUIWorkflow(active, args.workflow)
@@ -305,11 +325,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     description: 'Generate a new image with the configured provider. Use when the user asks to create or draw a new image; use edit_image instead when they want to change an existing image. Give a complete visual prompt including subject, composition, style, lighting, and any exact text that should appear. The optional provider/model arguments switch provider or model for this call only when the user asks for a specific one. A successful image is attached directly to the conversation and may also be saved under the session workspace. Do not call read, glob, or other tools to locate or verify the image.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'Complete description of the image to generate.' },
-      provider: { type: 'string', enum: ['google', 'openai', 'openai-compat', 'seedream', 'dashscope', 'xai', 'zhipu', 'comfyui', 'chatgpt-sub', 'grok-sub', 'google-sub'], description: 'Optional provider for this call only (for example when the user asks to use a specific provider); omit to use the configured default. chatgpt-sub, grok-sub, and google-sub generate through the logged-in subscription account instead of an API key.' },
+      provider: { type: 'string', enum: ['google', 'openai', 'openai-compat', 'seedream', 'dashscope', 'xai', 'zhipu', 'comfyui', 'chatgpt-sub', 'grok-sub', 'google-sub'], description: 'OMIT unless the user explicitly requests a specific image provider. Omission uses the saved default; never guess a channel or fill this with an empty string. chatgpt-sub, grok-sub, and google-sub use logged-in subscription accounts instead of API keys.' },
       model: { type: 'string', description: 'Optional model name for this call only, overriding the configured model. Not used by ComfyUI (use workflow instead) nor by the subscription providers (model fixed by the subscription).' },
       aspect_ratio: { type: 'string', enum: ['1:1', '3:2', '2:3', '4:3', '3:4', '4:5', '5:4', '16:9', '9:16', '21:9'], description: 'Optional output aspect ratio for Google Gemini, xAI Grok, and subscription channels.' },
-      image_size: { type: 'string', enum: ['1K', '2K', '4K'], description: 'Optional output resolution for Google Gemini, xAI Grok, Grok subscription (1K/2K), or Google subscription (1K/4K).' },
-      size: { type: 'string', description: 'Optional dimensions or size tier for OpenAI, Seedream, or DashScope; WIDTHxHEIGHT maps to aspect_ratio for xAI Grok.' },
+      image_size: { type: 'string', enum: ['1K', '2K', '4K'], description: 'Optional output resolution for Google Gemini, xAI Grok, Grok subscription (1K/2K), or Google subscription (1K/4K). NEVER send this for chatgpt-sub; omit unused fields entirely.' },
+      size: { type: 'string', description: 'Optional dimensions or size tier for OpenAI, Seedream, or DashScope; WIDTHxHEIGHT maps to aspect_ratio for xAI Grok. Do not combine with aspect_ratio; omit instead of using an empty string.' },
       quality: { type: 'string', description: 'Optional generation quality for OpenAI or compatible APIs, independent of pixel size (e.g. auto, low, medium, high). Omit to use the configured default.' },
       workflow: { type: 'string', description: 'Optional name of the ComfyUI workflow to run; omit to use the active workflow from settings. Only meaningful when the ComfyUI provider is selected.' },
     },
@@ -325,10 +345,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     description: 'Generate several images in one call, one per prompt, in order. Use for batches, variations, or illustration sets; prefer generate_image for a single image. Every successful image is attached to the conversation and may be saved under the session workspace. Items generate sequentially; a failed item is reported in the failures list and does not abort the rest. The optional provider/model/size arguments apply to every item.',
     parameters: {
       prompts: { type: 'array', items: { type: 'string' }, required: true, description: 'Ordered complete prompts; one image is generated per entry (1-10).' },
-      provider: { type: 'string', enum: ['google', 'openai', 'openai-compat', 'seedream', 'dashscope', 'xai', 'zhipu', 'comfyui', 'chatgpt-sub', 'grok-sub', 'google-sub'], description: 'Optional provider for this call only, applied to every item; omit to use the configured default.' },
+      provider: { type: 'string', enum: ['google', 'openai', 'openai-compat', 'seedream', 'dashscope', 'xai', 'zhipu', 'comfyui', 'chatgpt-sub', 'grok-sub', 'google-sub'], description: 'OMIT unless the user explicitly requests a specific image provider. Uses the saved default for all items; never guess a channel or fill unused fields with empty strings.' },
       model: { type: 'string', description: 'Optional model name for this call only, applied to every item.' },
       aspect_ratio: { type: 'string', enum: ['1:1', '3:2', '2:3', '4:3', '3:4', '4:5', '5:4', '16:9', '9:16', '21:9'], description: 'Optional output aspect ratio for Google Gemini, xAI Grok, and subscription channels.' },
-      image_size: { type: 'string', enum: ['1K', '2K', '4K'], description: 'Optional output resolution for Google Gemini, xAI Grok, Grok subscription (1K/2K), or Google subscription (1K/4K).' },
+      image_size: { type: 'string', enum: ['1K', '2K', '4K'], description: 'Optional output resolution for Google Gemini, xAI Grok, Grok subscription (1K/2K), or Google subscription (1K/4K). NEVER send this for chatgpt-sub; omit unused fields entirely.' },
       size: { type: 'string', description: 'Optional dimensions or size tier for OpenAI, Seedream, or DashScope; WIDTHxHEIGHT maps to aspect_ratio for xAI Grok.' },
       quality: { type: 'string', description: 'Optional OpenAI or compatible generation quality, applied to every item independently of size.' },
       workflow: { type: 'string', description: 'Optional name of the ComfyUI workflow to run; omit to use the active workflow from settings.' },
@@ -396,7 +416,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     description: 'Edit, combine, or restyle existing images with the configured provider. Images attached inline to the latest human message are already readable DSH attachments even when no workspace file exists. In that case, call edit_image immediately with prompt only; NEVER call read_image, glob, or shell to locate them, and NEVER invent @ paths. All inline images will be used in upload order. For specific older conversation images use source_attachment_id or source_attachment_ids; both canonical sha256: IDs and full bare SHA-256 digests are accepted. For files the user explicitly names in the workspace use source_path or source_paths. For what the user selected or drew on the image-gen workbench canvas (for example a hand-drawn sketch) use source=canvas_selection; canvas_state can verify a selection exists first. Provide exactly one selector field. Without a selector, images from the latest human message take priority; only when that message has no images does editing fall back to the newest conversation image. When the user wants a person, character, or object from the reference images kept as the same identity, write short hard identity-preservation instructions (use the same subject from the references; do not redesign it or synthesize a similar-looking replacement; change only scene, clothing, pose, lighting, style, or composition) instead of long generic appearance descriptions, which make the model replace the subject with a synthesized lookalike.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'Describe the changes to make while preserving everything else that should remain.' },
-      provider: { type: 'string', enum: ['google', 'openai', 'openai-compat', 'seedream', 'dashscope', 'xai', 'zhipu', 'comfyui', 'chatgpt-sub', 'grok-sub', 'google-sub'], description: 'Optional provider for this call only (for example when the user asks to use a specific provider); omit to use the configured default. chatgpt-sub, grok-sub, and google-sub edit images through the logged-in subscription account instead of an API key.' },
+      provider: { type: 'string', enum: ['google', 'openai', 'openai-compat', 'seedream', 'dashscope', 'xai', 'zhipu', 'comfyui', 'chatgpt-sub', 'grok-sub', 'google-sub'], description: 'OMIT unless the user explicitly requests a specific image provider. Omission uses the saved default; never guess a channel or fill this with an empty string. Subscription providers edit through their logged-in accounts.' },
       model: { type: 'string', description: 'Optional model name for this call only, overriding the configured model. Not used by ComfyUI (use workflow instead) nor by the subscription providers (model fixed by the subscription).' },
       source: { type: 'string', enum: ['canvas_selection'], description: 'Use the current selection on the image-gen workbench infinite canvas as the reference image(s): full-resolution originals when the selection is conversation-generated images, plus a screenshot of the whole selection when it also contains other content (hand-drawn strokes, pasted images). Choose this when the user refers to what they selected or drew on the canvas; combine with no other selector field.' },
       source_attachment_id: { type: 'string', description: 'Optional attachment id of a specific image already present in the current conversation.' },
@@ -404,14 +424,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       source_path: { type: 'string', description: 'Optional absolute or workspace-relative path of a specific image file inside the active session workspace. Prefer this when the user names a saved file.' },
       source_paths: { type: 'array', items: { type: 'string' }, description: 'Optional ordered absolute or workspace-relative paths of multiple image files inside the active session workspace.' },
       aspect_ratio: { type: 'string', enum: ['1:1', '3:2', '2:3', '4:3', '3:4', '4:5', '5:4', '16:9', '9:16', '21:9'], description: 'Optional output aspect ratio for Google Gemini, xAI Grok, and subscription channels.' },
-      image_size: { type: 'string', enum: ['1K', '2K', '4K'], description: 'Optional output resolution for Google Gemini, xAI Grok, Grok subscription (1K/2K), or Google subscription (1K/4K).' },
+      image_size: { type: 'string', enum: ['1K', '2K', '4K'], description: 'Optional output resolution for Google Gemini, xAI Grok, Grok subscription (1K/2K), or Google subscription (1K/4K). NEVER send this for chatgpt-sub; omit unused fields entirely.' },
       size: { type: 'string', description: 'Optional output size for OpenAI, Seedream, or DashScope; WIDTHxHEIGHT maps to aspect_ratio for xAI Grok.' },
       quality: { type: 'string', description: 'Optional generation quality for OpenAI or compatible edits, independent of size.' },
       workflow: { type: 'string', description: 'Optional name of the ComfyUI workflow to run; omit to use the active workflow from settings. Only meaningful when the ComfyUI provider is selected.' },
     },
     output: imageOutput('Edited'),
-    async execute(args, exec): Promise<GeneratedValue> {
-      const active = resolveProvider(withProviderOverrides(current(), providerOverrideOf(args.provider), args.model))
+    async execute(rawArgs, exec): Promise<GeneratedValue> {
+      const args = cleanImageToolArgs(rawArgs)
+      const active = resolveProvider(withProviderOverrides(current(), providerOverrideOf(args.provider), args.model, 'edit'))
       const canvasSelection = args.source === 'canvas_selection'
       if (canvasSelection && (
         args.source_attachment_id !== undefined

@@ -24,7 +24,7 @@ function configuredField(extra: Record<string, unknown> | undefined): WatermarkF
 /** Model names alone do not establish the protocol of an unknown relay. */
 function officialContract(config: Config, mode: Mode): 'sensenova' | 'qwen' | undefined {
   const extra = mode === 'generate' ? config.openaiCompatExtraBody : config.openaiCompatEditExtra
-  const model = extra?.model ?? config.openaiCompatModel
+  const model = extra?.model ?? (mode === 'edit' ? config.openaiCompatEditModel?.trim() || config.openaiCompatModel : config.openaiCompatModel)
   if (typeof model !== 'string') return undefined
   try {
     const url = new URL(config.openaiCompatBaseURL ?? '')
@@ -41,6 +41,12 @@ function officialContract(config: Config, mode: Mode): 'sensenova' | 'qwen' | un
 
 /** Known official edit contracts take precedence over relay-specific format settings. */
 export function compatEditFormat(config: Config): CompatEditFormat {
+  try {
+    const url = new URL(config.openaiCompatBaseURL ?? '')
+    if (url.protocol === 'https:' && !url.port && !url.search && !url.hash
+      && (url.hostname === 'api.siliconflow.cn' || url.hostname === 'api.siliconflow.com')
+      && url.pathname.replace(/\/+$/, '') === '/v1') return 'siliconflowJson'
+  } catch { /* Custom relays can select the protocol explicitly. */ }
   const contract = officialContract(config, 'edit')
   if (contract === 'sensenova') return 'jsonImageUrlArray'
   if (contract === 'qwen') return 'qwenJson'

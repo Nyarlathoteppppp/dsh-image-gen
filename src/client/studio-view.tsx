@@ -32,7 +32,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
-import { DELETE_ROUTE, SAVE_WORKSPACE_ROUTE, STUDIO_ROUTE, isSubscriptionProvider, studioWatermarkCapability, type CloudImageProvider, type StudioConfigResponse, type StudioGenerateResponse, type StudioGeneratedItem, type StudioProvider, type StudioProviderProfile, type StudioReference, type StudioWatermark } from '../shared.js'
+import { DELETE_ROUTE, SAVE_WORKSPACE_ROUTE, STUDIO_ROUTE, isSubscriptionProvider, studioWatermarkCapability, studioModelForMode, type CloudImageProvider, type StudioConfigResponse, type StudioGenerateResponse, type StudioGeneratedItem, type StudioProvider, type StudioProviderProfile, type StudioReference, type StudioWatermark } from '../shared.js'
 import { deleteGalleryItem, getGalleryItems, saveGalleryItem, subscribeGallery, toggleFavoriteGalleryItem, type GalleryItem, saveFavoritePrompt, getFavoritePrompts, deleteFavoritePrompt, subscribeFavorites, addFavoriteFolder, getFavoriteFolders, deleteFavoriteFolder, moveFavoritePrompt, updateFavoritePrompt, type FavoritePrompt, type FavoriteFolder } from './gallery-store.js'
 import { evictAttachmentCache, fetchAttachmentBlob } from './image-cache.js'
 import { copyImageBlob, downloadBlobUrl, formatRelativeTime } from './browser-image-utils.js'
@@ -484,6 +484,7 @@ export const StudioView: FC<{
   }, [])
 
   const activeProfile = useMemo(() => config?.providers.find(item => item.provider === provider), [config, provider])
+  const requestModel = mode === 'edit' && activeProfile?.editModel ? studioModelForMode(activeProfile, mode) : model
   const configuredCount = config?.providers.filter(item => item.configured).length ?? 0
   // Split badge counts: BYOK keys and subscription sign-ins stay separately
   // visible so a number is never a mixed bag of semantics.
@@ -871,7 +872,7 @@ export const StudioView: FC<{
             body: JSON.stringify({
               mode,
               provider: target.profile.provider,
-              model: target.profile.model,
+              model: studioModelForMode(target.profile, mode),
               prompt: prompt.trim(),
               ratio: target.ratio,
               quality: target.quality,
@@ -941,7 +942,7 @@ export const StudioView: FC<{
         method: 'POST', credentials: 'same-origin', signal: controller.signal,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          mode, provider, model, prompt: prompt.trim(), ratio, quality: selectedQuality,
+          mode, provider, model: requestModel, prompt: prompt.trim(), ratio, quality: selectedQuality,
           ...(selectedResolution === undefined ? {} : { resolution: selectedResolution }),
           ...(provider === 'openai-compat' ? { generationQuality: selectedGenerationQuality } : {}),
           ...(watermarkCapability.status === 'supported' ? { watermark } : {}),
@@ -1401,7 +1402,7 @@ export const StudioView: FC<{
                         <li key={p.provider} className={p.configured ? 'is-configured' : 'is-missing'}>
                           <div className="dsh-ig-status-item-name">
                             <strong>{p.label}</strong>
-                            <small>{p.model}</small>
+                            <small>{studioModelForMode(p, mode)}</small>
                           </div>
                           <span className="dsh-ig-status-item-tag">
                             {isSubscriptionProvider(p.provider)
@@ -1500,7 +1501,7 @@ export const StudioView: FC<{
               <div className="dsh-ig-generating-state">
                 <div className="dsh-ig-generation-orbit"><Sparkles size={28} /></div>
                 <strong>{comparisonEnabled ? t('comparing', { count: String(comparisonTargets.length) }) : count > 1 ? t('generatingCount', { count: String(count) }) : t('generating')}</strong>
-                <span>{comparisonEnabled ? comparisonTargets.map(target => target.profile.label).join(' · ') : `${activeProfile?.label ?? ''} · ${model}`}</span>
+                <span>{comparisonEnabled ? comparisonTargets.map(target => target.profile.label).join(' · ') : `${activeProfile?.label ?? ''} · ${requestModel}`}</span>
               </div>
             ) : currentBatch && currentBatch.length > 1 ? (
               <div
@@ -1718,7 +1719,7 @@ export const StudioView: FC<{
                       return (
                         <button key={item.provider} type="button" className={target ? 'is-selected' : ''} aria-pressed={Boolean(target)} onClick={() => toggleComparisonProvider(item.provider)}>
                           <span className="dsh-ig-model-checkmark">{target ? <Check size={12} /> : null}</span>
-                          <span className="dsh-ig-model-copy"><strong>{item.label}</strong><small title={item.model}>{item.model}</small></span>
+                          <span className="dsh-ig-model-copy"><strong>{item.label}</strong><small title={studioModelForMode(item, mode)}>{studioModelForMode(item, mode)}</small></span>
                           {target && <span className="dsh-ig-model-settings">{[target.ratio, target.resolution, target.quality === target.resolution ? undefined : target.quality, target.generationQuality === PROVIDER_DEFAULT_QUALITY ? undefined : target.generationQuality].filter(Boolean).join(' · ')}{target.adjusted ? <em>{t('compareAdjusted')}</em> : null}</span>}
                         </button>
                       )
@@ -1735,7 +1736,7 @@ export const StudioView: FC<{
                 {comparisonWatermarkCapability.status === 'supported' ? <div className="dsh-ig-inline-note">{lang === 'en' ? 'Watermark applies only to models with confirmed support for this operation.' : '水印选项仅用于已确认支持当前操作的模型。'}</div> : null}
                 {comparisonTargets.some(target => target.profile.provider === 'chatgpt-sub') && <div className="dsh-ig-inline-note">{t('subscriptionParameterHint')}</div>}
               </> : <>
-                <div className="dsh-ig-field-grid"><FieldSelect label={t('provider')} value={provider} onChange={changeProvider} options={config.providers.map(item => ({ value: item.provider, label: `${item.label}${item.configured ? '' : ` · ${t('unconfigured')}`}` }))} /><FieldSelect label={t('model')} value={model} onChange={setModel} options={activeProfile === undefined ? [] : [{ value: activeProfile.model, label: activeProfile.model }]} /></div>
+                <div className="dsh-ig-field-grid"><FieldSelect label={t('provider')} value={provider} onChange={changeProvider} options={config.providers.map(item => ({ value: item.provider, label: `${item.label}${item.configured ? '' : ` · ${t('unconfigured')}`}` }))} /><FieldSelect label={t('model')} value={requestModel} onChange={setModel} options={activeProfile === undefined ? [] : [{ value: studioModelForMode(activeProfile, mode), label: studioModelForMode(activeProfile, mode) }]} /></div>
                 <div className="dsh-ig-field-grid is-output-grid">
                   <FieldSelect label={t('ratio')} value={ratio} onChange={setRatio} options={localizeRatioOptions(activeProfile?.ratioOptions ?? [], lang)} />
                   {resolutionOpts.length > 0 ? <FieldSelect label={lang === 'en' ? 'Resolution' : '分辨率'} value={selectedResolution ?? ''} onChange={setResolution} options={resolutionOpts} /> : null}

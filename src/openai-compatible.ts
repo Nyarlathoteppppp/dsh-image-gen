@@ -58,7 +58,7 @@ export async function generateOpenAICompatibleImage(input: {
 }
 
 /** How the edits endpoint expects its request body (#41). */
-export type CompatEditFormat = 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages' | 'xaiJson' | 'qwenJson'
+export type CompatEditFormat = 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages' | 'siliconflowJson' | 'xaiJson' | 'qwenJson'
 
 export async function editOpenAICompatibleImage(input: {
   apiKey: string
@@ -92,6 +92,28 @@ export async function editOpenAICompatibleImage(input: {
    */
   extraBody?: Readonly<Record<string, unknown>>
 }): Promise<GeneratedCompatibleImage> {
+  if (input.editFormat === 'siliconflowJson') {
+    const body: Record<string, unknown> = { model: input.model, prompt: input.prompt, ...(input.editExtra ?? {}), ...(input.extraBody ?? {}) }
+    const model = typeof body.model === 'string' ? body.model.trim() : ''
+    if (!model) throw new Error('硅基流动图生图需要编辑模型')
+    body.model = model
+    if (model === 'Qwen/Qwen-Image') throw new Error('Qwen/Qwen-Image 是文生图模型；请配置图生图模型，例如 Qwen/Qwen-Image-Edit')
+    const maxReferences = model === 'Qwen/Qwen-Image-Edit-2509' ? 3 : 1
+    if (input.sourceImages.length < 1 || input.sourceImages.length > maxReferences) throw new Error(`${model} 图生图支持 1–${String(maxReferences)} 张参考图，当前 ${String(input.sourceImages.length)} 张；请精简参考图或选择支持多图的编辑模型`)
+    // Qwen edits derive output dimensions from the reference. Generic picker
+    // defaults must not turn into unsupported image_size/size/quality fields.
+    if (['size', 'image_size', 'quality'].some(key => key in body)) throw new Error('此硅基流动图生图格式不发送 size、image_size 或 quality；请从图生图额外字段中移除这些字段')
+    delete body.image
+    delete body.image2
+    delete body.image3
+    for (const [index, source] of input.sourceImages.entries()) body[index === 0 ? 'image' : `image${String(index + 1)}`] = toDataUrl(source)
+    const response = await guardedFetch('siliconflow image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'generations'), {
+      method: 'POST', redirect: 'error', signal: input.signal,
+      headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }), input.apiKey)
+    return parseImageResponse(response, 'siliconflow', input)
+  }
   if (input.editFormat === 'qwenJson') {
     // Qwen's official compatible API edits through images/generations, using image URLs directly.
     const response = await guardedFetch('openai-compat image edit request', input.signal, () => fetch(imageEndpoint(input.baseURL, 'generations'), {

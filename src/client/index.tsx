@@ -96,13 +96,14 @@ interface ImageSettings {
   openaiSizes?: Record<string, Record<string, string>>
   openaiCompatBaseURL?: string
   openaiCompatModel?: string
+  openaiCompatEditModel?: string
   openaiCompatSizes?: Record<string, Record<string, string>>
   openaiCompatQuality?: string
   openaiCompatQualityOptions?: string[]
   openaiCompatExtraBody?: Record<string, unknown>
   openaiCompatEditSizeMode?: 'auto' | 'selected'
   /** Edit-request shape for the openai-compat relay (#41); see src/config.ts. */
-  openaiCompatEditFormat?: 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages'
+  openaiCompatEditFormat?: 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages' | 'siliconflowJson'
   /** Extra JSON fields merged into the JSON edit body; ignored in multipart mode. */
   openaiCompatEditExtra?: Record<string, unknown>
   seedreamBaseURL?: string
@@ -267,11 +268,15 @@ const DICT = {
     endpointHintOpenAI: '官方 api.openai.com 的 /v1 地址；中转站请使用下方「OpenAI 兼容」行。',
     endpointHintOpenAICompat: '中转站/自建服务的 OpenAI 兼容 /v1 地址（必填），例如 https://your-relay.example.com/v1。',
     editFormat: '图生图请求形态',
+    editModel: '图生图模型（可选）',
+    editModelHint: '留空沿用上方模型。硅基流动可分别填写 Qwen/Qwen-Image（文生图）和 Qwen/Qwen-Image-Edit（图生图）。',
+    editFormatSiliconFlow: '硅基流动 JSON（image 字符串）',
+    editFormatSiliconFlowHint: '编辑尺寸由参考图决定，不发送尺寸和质量字段。Qwen-Image-Edit 支持一张图，Edit-2509 最多三张；参考图字段由插件填入。',
     editFormatMultipart: '标准 multipart（OpenAI 官方）',
     editFormatAutomatic: '自动：官方接口 JSON 格式',
     editFormatJsonImageUrlArray: 'JSON images 数组（商汤等中转）',
     editFormatFormReferenceImages: 'multipart + reference_images JSON 数组（base64）',
-    editFormatHint: '商汤、通义已确认的官方接口自动使用对应 JSON 格式；其他中转按接口文档选择。文生图不受影响。',
+    editFormatHint: '商汤、通义、硅基流动已确认的官方接口自动使用对应 JSON 格式；其他中转按接口文档选择。文生图不受影响。',
     editExtra: '附加 JSON 字段',
     editExtraPlaceholder: '{"watermark": false, "prompt_extend": true}',
     editExtraHint: '仅 JSON 形态生效；会合并到请求体末尾，可覆盖默认字段。留空表示不附加。',
@@ -437,11 +442,15 @@ const DICT = {
     endpointHintOpenAI: 'Official api.openai.com /v1 base URL; for relays use the "OpenAI-compatible" row below.',
     endpointHintOpenAICompat: 'OpenAI-compatible /v1 base URL of your relay or self-hosted service (required), e.g. https://your-relay.example.com/v1.',
     editFormat: 'Edit request format',
+    editModel: 'Editing model (optional)',
+    editModelHint: 'Leave empty to reuse the model above. SiliconFlow can use Qwen/Qwen-Image for generation and Qwen/Qwen-Image-Edit for editing.',
+    editFormatSiliconFlow: 'SiliconFlow JSON (image string)',
+    editFormatSiliconFlowHint: 'Edit dimensions follow the reference; size and quality fields are omitted. Qwen-Image-Edit supports one reference, Edit-2509 up to three. The plugin fills the image fields.',
     editFormatMultipart: 'Standard multipart (official OpenAI)',
     editFormatAutomatic: 'Automatic: official JSON contract',
     editFormatJsonImageUrlArray: 'JSON images array (SenseNova etc.)',
     editFormatFormReferenceImages: 'Multipart with a reference_images JSON array (base64)',
-    editFormatHint: 'Recognized official SenseNova and Qwen endpoints automatically use their JSON edit contracts. Choose other relay formats according to their documentation. Text-to-image is unaffected.',
+    editFormatHint: 'Recognized official SenseNova, Qwen and SiliconFlow endpoints automatically use their JSON edit contracts. Choose other relay formats according to their documentation. Text-to-image is unaffected.',
     editExtra: 'Extra JSON fields',
     editExtraPlaceholder: '{"watermark": false, "prompt_extend": true}',
     editExtraHint: 'Only used with the JSON format; merged into the request body last and may override defaults. Leave empty for none.',
@@ -1145,6 +1154,7 @@ type KeyStatus = 'checking' | 'configured' | 'missing' | 'unknown' | 'unavailabl
 interface ProviderRowState {
   expanded: boolean
   model: string
+  editModel: string
   baseURL: string
   googleNative: boolean
   keyInput: string
@@ -1163,7 +1173,7 @@ interface ProviderRowState {
   activeWorkflow: string
   timeoutSeconds: number
   /** openai-compat only: edits request shape (#41). Other rows keep the default. */
-  editFormat: 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages'
+  editFormat: 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages' | 'siliconflowJson'
   /** openai-compat only: extra JSON fields for the JSON edit body, as user text. */
   editExtraText: string
   sizeTableText: string
@@ -1181,6 +1191,7 @@ function emptyProviderRow(): ProviderRowState {
   return {
     expanded: false,
     model: '',
+    editModel: '',
     baseURL: '',
     googleNative: false,
     keyInput: '',
@@ -1267,8 +1278,8 @@ function editExtraTextOf(value: Record<string, unknown> | undefined): string {
 }
 
 /** Persisted or selected edit-format value → row state; unknown values fall back to standard multipart. */
-function parseEditFormat(value: string | undefined): 'multipart' | 'jsonImageUrlArray' | 'formReferenceImages' {
-  return value === 'jsonImageUrlArray' || value === 'formReferenceImages' ? value : 'multipart'
+function parseEditFormat(value: string | undefined): ProviderRowState['editFormat'] {
+  return value === 'jsonImageUrlArray' || value === 'formReferenceImages' || value === 'siliconflowJson' ? value : 'multipart'
 }
 
 /** Build one row per provider from persisted settings, including ComfyUI extras. */
@@ -1287,6 +1298,7 @@ function rowsFromSettings(value: ImageSettings | undefined): Record<Provider, Pr
         timeoutSeconds: Math.max(1, Math.round((value?.comfyuiTimeoutMs ?? DEFAULT_COMFYUI_TIMEOUT_MS) / 1000)),
       } : {}),
       ...(provider === 'openai-compat' ? {
+        editModel: value?.openaiCompatEditModel ?? '',
         editFormat: parseEditFormat(value?.openaiCompatEditFormat),
         editExtraText: editExtraTextOf(value?.openaiCompatEditExtra),
         sizeTableText: editExtraTextOf(value?.openaiCompatSizes),
@@ -1516,6 +1528,7 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
         next[provider] = {
           ...current[provider],
           model: modelOf(provider, value),
+          ...(provider === 'openai-compat' ? { editModel: value?.openaiCompatEditModel ?? '' } : {}),
           baseURL: baseURLOf(provider, value),
           ...(provider === 'comfyui' ? {
             workflows: resolveComfyUIWorkflows(value ?? {}),
@@ -1618,6 +1631,7 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
         if (provider === 'google') await saveSetting('googleNative', row.googleNative)
         if (provider === 'openai') await saveSetting('openaiSizes', sizeTable)
         if (provider === 'openai-compat') {
+          await saveSetting('openaiCompatEditModel', row.editModel.trim())
           await saveSetting('openaiCompatEditFormat', row.editFormat)
           await saveSetting('openaiCompatEditExtra', editExtra)
           await saveSetting('openaiCompatSizes', sizeTable)
@@ -1854,7 +1868,7 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
   const renderCloudBody = (provider: CloudImageProvider) => {
     const row = rows[provider]
     const officialEditFormat = provider === 'openai-compat'
-      ? compatEditFormat({ openaiCompatBaseURL: row.baseURL, openaiCompatModel: row.model }) : 'multipart'
+      ? compatEditFormat({ openaiCompatBaseURL: row.baseURL, openaiCompatModel: row.editModel.trim() || row.model }) : 'multipart'
     const automaticEditFormat = officialEditFormat !== 'multipart'
     const editFormat = automaticEditFormat ? officialEditFormat : row.editFormat
     const keyRef = cloudCredentialRef(provider) ?? ''
@@ -1934,6 +1948,13 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
           </label>
           {provider === 'openai-compat' ? (
             <label className="dsh-ig-field">
+              <span className="dsh-ig-label">{t('editModel')}</span>
+              <input className="dsh-ig-input" value={row.editModel} onChange={event => { updateRow(provider, { editModel: event.target.value }) }} list="dsh-ig-openai-compat-model-options" disabled={!settingsWritable} />
+              <span className="dsh-ig-hint">{t('editModelHint')}</span>
+            </label>
+          ) : null}
+          {provider === 'openai-compat' ? (
+            <label className="dsh-ig-field">
               <span className="dsh-ig-label">{t('editFormat')}</span>
               <select
                 className="dsh-ig-input"
@@ -1945,8 +1966,9 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
                 <option value="multipart">{t('editFormatMultipart')}</option>
                 <option value="jsonImageUrlArray">{t('editFormatJsonImageUrlArray')}</option>
                 <option value="formReferenceImages">{t('editFormatFormReferenceImages')}</option>
+                <option value="siliconflowJson">{t('editFormatSiliconFlow')}</option>
               </select>
-              <span className="dsh-ig-hint">{t('editFormatHint')}</span>
+              <span className="dsh-ig-hint">{t(editFormat === 'siliconflowJson' ? 'editFormatSiliconFlowHint' : 'editFormatHint')}</span>
             </label>
           ) : null}
           {provider === 'seedream' ? (
@@ -2017,7 +2039,7 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
               </label>
             </>
           ) : null}
-          {provider === 'openai-compat' && (editFormat === 'jsonImageUrlArray' || editFormat === 'qwenJson') ? (
+          {provider === 'openai-compat' && (editFormat === 'jsonImageUrlArray' || editFormat === 'qwenJson' || editFormat === 'siliconflowJson') ? (
             <>
             {editFormat === 'jsonImageUrlArray' ? (
             <label className="dsh-ig-field">

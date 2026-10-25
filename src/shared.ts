@@ -261,6 +261,8 @@ export interface StudioProviderProfile {
   provider: StudioProvider
   label: string
   model: string
+  /** Separate configured edit model; absent preserves the generation model. */
+  editModel?: string
   configured: boolean
   supportsEditing: boolean
   ratioOptions: StudioOption[]
@@ -276,6 +278,11 @@ export interface StudioProviderProfile {
   /** Generation options retained for clients predating operation-specific capabilities. */
   watermarkOptions?: StudioOption[]
   watermarkCapabilities?: Record<'generate' | 'edit', StudioWatermarkCapability>
+}
+
+/** A model picker/request must use the same operation-specific default. */
+export function studioModelForMode(profile: StudioProviderProfile, mode: 'generate' | 'edit'): string {
+  return mode === 'edit' ? profile.editModel ?? profile.model : profile.model
 }
 
 export function studioWatermarkCapability(profile: StudioProviderProfile | undefined, mode: 'generate' | 'edit'): StudioWatermarkCapability {
