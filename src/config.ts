@@ -6,6 +6,7 @@ import type { CompatEditFormat } from './openai-compatible.js'
 import {
   ARK_BACKGROUND_MODES,
   ARK_OUTPUT_FORMATS,
+  DEFAULT_CLOUD_TIMEOUT_MS,
   DEFAULT_DASHSCOPE_ENDPOINT,
   DEFAULT_DASHSCOPE_MODEL,
   DEFAULT_COMFYUI_BASE_URL,
@@ -42,6 +43,7 @@ import {
 export {
   ARK_BACKGROUND_MODES,
   ARK_OUTPUT_FORMATS,
+  DEFAULT_CLOUD_TIMEOUT_MS,
   DEFAULT_DASHSCOPE_ENDPOINT,
   DEFAULT_DASHSCOPE_MODEL,
   DEFAULT_COMFYUI_BASE_URL,
@@ -86,6 +88,7 @@ export type ImageSize = typeof IMAGE_SIZES[number]
 /** Bundle configuration from the profile patch and the Web settings page. */
 export interface Config {
   provider?: ImageProvider
+  cloudTimeoutMs?: number
   googleModel?: string
   googleEndpoint?: string
   /** Use Gemini generateContent instead of Interactions; opt-in for native-only gateways. */
@@ -194,6 +197,7 @@ function volatile<T extends z>(schema: T): T {
  */
 export const Config = z.object({
   provider: volatile(z.union(IMAGE_PROVIDERS).default('google')),
+  cloudTimeoutMs: volatile(z.number().min(5_000).max(3_600_000).default(DEFAULT_CLOUD_TIMEOUT_MS)),
   googleModel: volatile(z.string().default(DEFAULT_GOOGLE_MODEL)),
   googleEndpoint: volatile(z.string().default(DEFAULT_GOOGLE_ENDPOINT)),
   googleNative: volatile(z.boolean().default(false)),

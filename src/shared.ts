@@ -174,6 +174,9 @@ export function isStudioProvider(provider: ImageProvider): provider is StudioPro
   return (STUDIO_PROVIDERS as readonly string[]).includes(provider)
 }
 
+/** Default timeout for API-key cloud generation in the browser workbench. */
+export const DEFAULT_CLOUD_TIMEOUT_MS = 150_000
+
 /** Timeout for one subscription image call, shared by the tool path and the
  * studio route so neither drifts from the other. */
 export const SUBSCRIPTION_TIMEOUT_MS = 300_000

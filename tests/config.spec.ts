@@ -334,6 +334,21 @@ describe('selectComfyUIWorkflow', () => {
 })
 
 describe('Config Schema validation', () => {
+  it('defaults the cloud timeout to 150 seconds and exposes a live override', () => {
+    expect(unwrap(Config({})).cloudTimeoutMs).toBe(150_000)
+    const configured = Config({ cloudTimeoutMs: 240_000 })
+    expect(configured.cloudTimeoutMs).toHaveProperty('get')
+    expect(unwrap(configured).cloudTimeoutMs).toBe(240_000)
+  })
+
+  it.each([5_000, 3_600_000])('accepts the cloud timeout boundary %s', cloudTimeoutMs => {
+    expect(unwrap(Config({ cloudTimeoutMs })).cloudTimeoutMs).toBe(cloudTimeoutMs)
+  })
+
+  it.each([4_999, 3_600_001])('rejects an out-of-range cloud timeout %s', cloudTimeoutMs => {
+    expect(() => Config({ cloudTimeoutMs })).toThrow()
+  })
+
   it('keeps native Google opt-in and exposes it as a live field', () => {
     expect(unwrap(Config({})).googleNative).toBe(false)
     const enabled = Config({ googleNative: true })

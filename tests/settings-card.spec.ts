@@ -67,6 +67,10 @@ function formHarness(lang = 'zh', initialValue: Record<string, unknown> = { open
     setKey, setSetting,
     expand: () => find(element => element.props.className === 'dsh-ig-provider-head').props.onClick(),
     cardText: () => text(render()),
+    settingInput: (label: string) => {
+      const field = elements(render()).find(element => element.type === 'label' && text(element).startsWith(label))!
+      return elements(field).find(element => element.type === 'input')!
+    },
     syncScope: () => { for (const setup of hooks.scopeEffects.splice(0)) setup() },
     rowText: () => text(row()),
     typeURL: (value: string) => find(element => element.props.type === 'url').props.onChange({ target: { value } }),
@@ -86,6 +90,37 @@ beforeEach(() => { hooks.values = []; hooks.cursor = 0; hooks.scopeEffects = [] 
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('settings card credential actions', () => {
+  it.each(['zh', 'en'])('saves and reopens the global cloud timeout in %s', async lang => {
+    const form = formHarness(lang)
+    const label = lang === 'zh' ? '云端生成超时（秒）' : 'Cloud generation timeout (seconds)'
+    expect(form.settingInput(label).props.value).toBe(150)
+    expect(form.settingInput(label).props).toMatchObject({ min: '5', max: '3600', step: '1' })
+    form.settingInput(label).props.onChange({ target: { value: '240' } })
+    form.settingInput(label).props.onBlur()
+    await vi.waitFor(() => expect(form.setSetting).toHaveBeenCalledWith('cloudTimeoutMs', 240_000))
+    hooks.values = []
+    expect(form.settingInput(label).props.value).toBe(240)
+    expect(form.cardText()).toContain(lang === 'zh' ? '不影响订阅通道和 ComfyUI' : 'Does not affect subscription channels or ComfyUI')
+  })
+
+  it('restores the saved cloud timeout when the host rejects the write', async () => {
+    const form = formHarness('zh', { cloudTimeoutMs: 240_000 })
+    const label = '云端生成超时（秒）'
+    form.setSetting.mockRejectedValueOnce(new Error('timeout-write-rejected'))
+    form.settingInput(label).props.onChange({ target: { value: '300' } })
+    form.settingInput(label).props.onBlur()
+    await vi.waitFor(() => expect(form.cardText()).toContain('timeout-write-rejected'))
+    expect(form.settingInput(label).props.value).toBe(240)
+  })
+
+  it.each(['', '4', '3601', '5.5'])('does not save an invalid cloud timeout %s', value => {
+    const form = formHarness()
+    const label = '云端生成超时（秒）'
+    form.settingInput(label).props.onChange({ target: { value } })
+    form.settingInput(label).props.onBlur()
+    expect(form.setSetting).not.toHaveBeenCalled()
+  })
+
   it.each(['zh', 'en'])('saves, reopens and clears the separate edit model with the SiliconFlow format in %s', async lang => {
     const form = formHarness(lang, { openaiCompatBaseURL: 'https://relay.example/v1', openaiCompatModel: 'generation-model' })
     const modelLabel = lang === 'zh' ? '图生图模型' : 'Editing model'

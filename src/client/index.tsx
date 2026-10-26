@@ -23,6 +23,7 @@ import {
   CLOUD_CREDENTIAL_REFS,
   CLOUD_IMAGE_PROVIDERS,
   DEFAULT_BASE_URLS,
+  DEFAULT_CLOUD_TIMEOUT_MS,
   DEFAULT_COMFYUI_TIMEOUT_MS,
   DEFAULT_MODELS,
   IMAGE_GENERATION_ENTRY_ID,
@@ -88,6 +89,7 @@ if (typeof __CANVAS_BUILD_TS__ !== 'undefined') {
 type Provider = ImageProvider
 interface ImageSettings {
   provider?: Provider
+  cloudTimeoutMs?: number
   googleModel?: string
   googleEndpoint?: string
   googleNative?: boolean
@@ -324,6 +326,8 @@ const DICT = {
     workflowDuplicateName: '工作流名称不能重复。',
     timeout: '生成超时（秒）',
     timeoutHint: '包括提交、等待和下载图片；默认 300 秒。',
+    cloudTimeout: '云端生成超时（秒）',
+    cloudTimeoutHint: '工作台所有 API Key 通道共用，5–3600 秒，默认 150 秒。不影响订阅通道和 ComfyUI；修改后对新请求生效。',
     workspaceSection: '工作区',
     saveToWorkspace: '保存到工作区',
     saveToWorkspaceHint: '每次生成后，把图片文件保存到当前会话工作区。',
@@ -498,6 +502,8 @@ const DICT = {
     workflowDuplicateName: 'Workflow names must be unique.',
     timeout: 'Generation timeout (seconds)',
     timeoutHint: 'Covers submission, waiting, and image download; defaults to 300 seconds.',
+    cloudTimeout: 'Cloud generation timeout (seconds)',
+    cloudTimeoutHint: 'Shared by all API-key channels in the workbench, 5–3600 seconds; defaults to 150 seconds. Does not affect subscription channels or ComfyUI; applies to new requests.',
     workspaceSection: 'Workspace',
     saveToWorkspace: 'Save to workspace',
     saveToWorkspaceHint: 'Write each generated image as a file into the session workspace.',
@@ -1332,6 +1338,8 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
   const [defaultProvider, setDefaultProvider] = useState<Provider>(() => props.scope.getSnapshot().value?.provider ?? 'google')
   const [providerMessage, setProviderMessage] = useState('')
   const [providerMessageIsError, setProviderMessageIsError] = useState(false)
+  const [cloudTimeoutSeconds, setCloudTimeoutSeconds] = useState(() => (props.scope.getSnapshot().value?.cloudTimeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS) / 1000)
+  const [cloudTimeoutMessage, setCloudTimeoutMessage] = useState('')
   const [saveToWorkspace, setSaveToWorkspace] = useState(() => props.scope.getSnapshot().value?.saveToWorkspace ?? true)
   const [workspaceFolder, setWorkspaceFolder] = useState(() => props.scope.getSnapshot().value?.workspaceFolder ?? 'dsh-image-gen')
   const [showPill, setShowPill] = useState(() => props.scope.getSnapshot().value?.showProviderPill === true)
@@ -1519,6 +1527,7 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
   useEffect(() => {
     const value = snapshot.value
     setDefaultProvider(value?.provider ?? 'google')
+    setCloudTimeoutSeconds((value?.cloudTimeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS) / 1000)
     setSaveToWorkspace(value?.saveToWorkspace ?? true)
     setWorkspaceFolder(value?.workspaceFolder ?? 'dsh-image-gen')
     setShowPill(value?.showProviderPill === true)
@@ -1826,6 +1835,17 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
     setRows(current => {
       const workflows = current.comfyui.workflows.map((entry, position) => position === index ? { ...entry, presetPrompt } : entry)
       return { ...current, comfyui: { ...current.comfyui, workflows } }
+    })
+  }
+
+  const commitCloudTimeout = (): void => {
+    if (!Number.isInteger(cloudTimeoutSeconds) || cloudTimeoutSeconds < 5 || cloudTimeoutSeconds > 3600) return
+    const next = cloudTimeoutSeconds * 1000
+    if (next === (snapshot.value?.cloudTimeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS)) return
+    setCloudTimeoutMessage('')
+    void saveSetting('cloudTimeoutMs', next).catch((cause: unknown) => {
+      setCloudTimeoutSeconds((snapshot.value?.cloudTimeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS) / 1000)
+      setCloudTimeoutMessage(cause instanceof Error ? cause.message : String(cause))
     })
   }
 
@@ -2246,6 +2266,20 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
             <span className="dsh-ig-hint">{t('defaultProviderHint')}</span>
             {providerMessage.length > 0 ? <span className={`dsh-ig-status${providerMessageIsError ? ' dsh-ig-status-error' : ''}`} role="status">{providerMessage}</span> : null}
           </div>
+          <label className="dsh-ig-field">
+            <span className="dsh-ig-label">{t('cloudTimeout')}</span>
+            <input
+              className="dsh-ig-input"
+              type="number" min="5" max="3600" step="1"
+              value={cloudTimeoutSeconds}
+              onChange={event => { setCloudTimeoutSeconds(Number(event.target.value)) }}
+              onBlur={() => { commitCloudTimeout() }}
+              onKeyDown={event => { if (event.key === 'Enter') commitCloudTimeout() }}
+              required disabled={!settingsWritable}
+            />
+            <span className="dsh-ig-hint">{t('cloudTimeoutHint')}</span>
+            {cloudTimeoutMessage.length > 0 ? <span className="dsh-ig-status dsh-ig-status-error" role="status">{cloudTimeoutMessage}</span> : null}
+          </label>
           <div className="dsh-ig-providers">
             {IMAGE_PROVIDERS.map(provider => renderProviderRow(provider))}
           </div>

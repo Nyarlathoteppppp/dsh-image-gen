@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { parseImageAttachmentRef } from './reference-image.js'
 import {
+  DEFAULT_CLOUD_TIMEOUT_MS,
   STUDIO_PROVIDERS,
   STUDIO_WATERMARK_VALUES,
   SUBSCRIPTION_TIMEOUT_MS,
@@ -18,6 +19,7 @@ export interface StudioRouteDeps {
   describe(): Promise<StudioConfigResponse>
   generate(input: StudioGenerateRequest, signal: AbortSignal): Promise<StudioGenerateResponse>
   maxBodyBytes: number
+  timeoutMs?: number
   /** Heartbeat cadence for the streaming generation response; tests shrink it. */
   heartbeatMs?: number
 }
@@ -41,10 +43,8 @@ export async function serveStudio(req: IncomingMessage, res: ServerResponse, dep
   // Upstream watchdog: a stalled provider must fail loudly instead of pinning
   // the browser spinner until undici's default 300s headers timeout fires.
   // Subscription channels are slower (especially Antigravity), so they get the
-  // shared SUBSCRIPTION_TIMEOUT_MS budget instead of the cloud 150s.
+  // shared SUBSCRIPTION_TIMEOUT_MS budget instead of the cloud setting.
   const watchdog = new AbortController()
-  const CLOUD_WATCHDOG_MS = 150_000
-  let subscriptionChannel = false
   const signal = AbortSignal.any([controller.signal, watchdog.signal])
   const onConnectionClose = () => {
     if (!res.writableEnded) {
@@ -66,10 +66,11 @@ export async function serveStudio(req: IncomingMessage, res: ServerResponse, dep
       return jsonError(res, 400, errorMessage(error, 'invalid-request'))
     }
     // Watchdog arms per channel: subscriptions get the longer subscription
-    // budget; API-key providers keep the original 150s.
-    subscriptionChannel = isSubscriptionProvider(input.provider)
-    const timeoutMs = subscriptionChannel ? SUBSCRIPTION_TIMEOUT_MS : CLOUD_WATCHDOG_MS
-    setTimeout(() => { watchdog.abort() }, timeoutMs).unref?.()
+    // budget; API-key providers use the configured cloud timeout.
+    const subscriptionChannel = isSubscriptionProvider(input.provider)
+    const timeoutMs = subscriptionChannel ? SUBSCRIPTION_TIMEOUT_MS : (deps.timeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS)
+    const timeout = setTimeout(() => { watchdog.abort() }, timeoutMs)
+    timeout.unref?.()
     // Respond with headers immediately and heartbeat newlines while the
     // provider works: reverse proxies (openresty defaults to 60s) reset
     // proxy_read_timeout on every upstream byte, so long generations survive
@@ -91,13 +92,14 @@ export async function serveStudio(req: IncomingMessage, res: ServerResponse, dep
         if (res.destroyed || res.writableEnded) return
         const message = watchdog.signal.aborted
           ? subscriptionChannel
-            ? '上游生成超时（订阅通道 300 秒未返回），请稍后重试'
-            : '上游生成超时（150 秒未返回），请检查网络或代理后重试'
+            ? `上游生成超时（订阅通道 ${String(Math.round(timeoutMs / 1000))} 秒未返回），请稍后重试`
+            : `上游生成超时（${String(Math.round(timeoutMs / 1000))} 秒未返回），请检查网络或代理后重试`
           : errorMessage(error, 'generation-failed')
         res.end(JSON.stringify({ error: message }))
       }
     } finally {
       clearInterval(heartbeat)
+      clearTimeout(timeout)
     }
   } catch (error) {
     if (res.headersSent || res.writableEnded || res.destroyed) {

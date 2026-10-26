@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createServer, type Server } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 import type { AddressInfo } from 'node:net'
 import { DEFAULT_GOOGLE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SEEDREAM_MODEL, DEFAULT_DASHSCOPE_MODEL, DEFAULT_XAI_MODEL, DEFAULT_ZHIPU_MODEL } from '../src/config.js'
 import { generateFromStudio, runPool, studioProfile, describeStudio, openAIRequestSize } from '../src/studio.js'
@@ -1330,6 +1332,52 @@ describe('workbench watermark request mapping', () => {
 })
 
 describe('streaming generation heartbeat', () => {
+  it.each([
+    ...CLOUD_IMAGE_PROVIDERS.map(provider => ({ provider, timeoutMs: 240_000, expectedMs: 240_000 })),
+    { provider: 'google' as const, timeoutMs: 5_000, expectedMs: 5_000 },
+    { provider: 'google' as const, timeoutMs: undefined, expectedMs: 150_000 },
+    ...SUBSCRIPTION_PROVIDERS.map(provider => ({ provider, timeoutMs: 5_000, expectedMs: 300_000 })),
+  ])('uses the generation timeout budget for $provider ($timeoutMs)', async ({ provider, timeoutMs, expectedMs }) => {
+    vi.useFakeTimers()
+    try {
+      const req = Object.assign(Readable.from([JSON.stringify({
+        mode: 'generate', provider, model: 'test-model', prompt: 'lake', ratio: '1:1', quality: '1K',
+      })]), { method: 'POST', headers: { 'content-type': 'application/json' } }) as unknown as IncomingMessage
+      const res = Object.assign(new EventEmitter(), {
+        writeHead: vi.fn(), write: vi.fn(), end: vi.fn(),
+        destroyed: false, writableEnded: false,
+      })
+      let generationSignal!: AbortSignal
+      let started!: () => void
+      const generating = new Promise<void>(resolve => { started = resolve })
+      const serving = serveStudio(req, res as unknown as ServerResponse, {
+        describe: async () => ({ providers: [], activeProvider: 'google' }),
+        generate: (_input, signal) => {
+          generationSignal = signal
+          started()
+          return new Promise((_, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+          })
+        },
+        maxBodyBytes: 1024,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      })
+      await generating
+      await vi.advanceTimersByTimeAsync(expectedMs - 1)
+      expect(generationSignal.aborted).toBe(false)
+      expect(res.end).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(generationSignal.aborted).toBe(true)
+      await serving
+      const budget = SUBSCRIPTION_PROVIDERS.includes(provider as SubscriptionProvider)
+        ? `订阅通道 ${String(expectedMs / 1000)}` : String(expectedMs / 1000)
+      expect(JSON.parse(res.end.mock.calls[0]![0] as string).error).toContain(`（${budget} 秒未返回）`)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
   it('sends headers plus heartbeat newlines while generating, then a parseable JSON body', async () => {
     const server = createServer()
     const url = await new Promise<string>((resolve) => {
