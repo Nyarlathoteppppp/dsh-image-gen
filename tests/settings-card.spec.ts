@@ -113,11 +113,14 @@ describe('settings card credential actions', () => {
     expect(form.settingInput(label).props.value).toBe(240)
   })
 
-  it.each(['', '4', '3601', '5.5'])('does not save an invalid cloud timeout %s', value => {
-    const form = formHarness()
+  it.each(['', '4', '3601', '5.5'].flatMap(value =>
+    [undefined, 240_000].map(cloudTimeoutMs => ({ value, cloudTimeoutMs })),
+  ))('restores the saved cloud timeout on blur for invalid input "$value" ($cloudTimeoutMs)', ({ value, cloudTimeoutMs }) => {
+    const form = formHarness('zh', { cloudTimeoutMs })
     const label = '云端生成超时（秒）'
     form.settingInput(label).props.onChange({ target: { value } })
     form.settingInput(label).props.onBlur()
+    expect(form.settingInput(label).props.value).toBe((cloudTimeoutMs ?? 150_000) / 1000)
     expect(form.setSetting).not.toHaveBeenCalled()
   })
 

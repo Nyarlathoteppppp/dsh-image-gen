@@ -1839,7 +1839,10 @@ export function ImageGenerationSettingsCard(props: SettingsCardProps) {
   }
 
   const commitCloudTimeout = (): void => {
-    if (!Number.isInteger(cloudTimeoutSeconds) || cloudTimeoutSeconds < 5 || cloudTimeoutSeconds > 3600) return
+    if (!Number.isInteger(cloudTimeoutSeconds) || cloudTimeoutSeconds < 5 || cloudTimeoutSeconds > 3600) {
+      setCloudTimeoutSeconds((snapshot.value?.cloudTimeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS) / 1000)
+      return
+    }
     const next = cloudTimeoutSeconds * 1000
     if (next === (snapshot.value?.cloudTimeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS)) return
     setCloudTimeoutMessage('')
